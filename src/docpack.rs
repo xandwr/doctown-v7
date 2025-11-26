@@ -198,6 +198,8 @@ pub struct SymbolEntry {
     pub mentioned_in_docs: Option<Vec<String>>, // Documentation files that mention this symbol
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_examples: Option<Vec<UsageExample>>, // Actual code examples showing how this symbol is used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_summary: Option<String>, // LLM-generated plain-English "Explain Like I'm 5" summary
 }
 
 /// A concrete usage example of a symbol
@@ -928,6 +930,16 @@ impl DocpackBuilder {
         output_path: P,
         project_graph: Option<&crate::ingest::ProjectGraph>,
     ) -> Result<()> {
+        self.write_to_file_with_llm(output_path, project_graph, None)
+    }
+
+    /// Write the .docpack file to disk with optional LLM summary generation
+    pub fn write_to_file_with_llm<P: AsRef<Path>>(
+        &self,
+        output_path: P,
+        project_graph: Option<&crate::ingest::ProjectGraph>,
+        llm_engine: Option<&mut crate::llm::LlmEngine>,
+    ) -> Result<()> {
         let file = std::fs::File::create(output_path)?;
         let mut zip = ZipWriter::new(file);
         let options: FileOptions<()> = FileOptions::default()
@@ -962,7 +974,7 @@ impl DocpackBuilder {
         // Write agent_index.json (if project graph is available)
         if let Some(pg) = project_graph {
             zip.start_file("agent_index.json", options)?;
-            let agent_index = crate::agent::build_agent_index(pg);
+            let agent_index = crate::agent::build_agent_index_with_llm(pg, llm_engine);
             let agent_index_json = serde_json::to_string_pretty(&agent_index)?;
             zip.write_all(agent_index_json.as_bytes())?;
         }

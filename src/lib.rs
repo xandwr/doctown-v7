@@ -6,6 +6,7 @@ pub mod docgen;
 pub mod docpack;
 pub mod embedding;
 pub mod ingest;
+pub mod llm;
 pub mod nlp;
 
 // Re-export commonly used types

@@ -5,12 +5,58 @@
 
 use crate::docpack::{AgentIndex, AgentQuickstart, Subsystem, SymbolEntry};
 use crate::ingest::{GraphEdge, GraphEdgeKind, ProjectGraph, SymbolNode};
+use crate::llm::LlmEngine;
 use std::collections::{HashMap, HashSet};
 
 /// Build the complete agent index from a project graph
+///
+/// If `llm_engine` is provided, plain-English summaries will be generated for all symbols
 pub fn build_agent_index(graph: &ProjectGraph) -> AgentIndex {
+    build_agent_index_with_llm(graph, None)
+}
+
+/// Build the complete agent index with optional LLM summary generation
+pub fn build_agent_index_with_llm(
+    graph: &ProjectGraph,
+    llm_engine: Option<&mut LlmEngine>,
+) -> AgentIndex {
     let subsystems = build_subsystems(graph);
-    let symbols = build_symbol_table(graph, &subsystems);
+    let mut symbols = build_symbol_table(graph, &subsystems);
+
+    // Generate LLM summaries if engine is provided
+    if let Some(engine) = llm_engine {
+        println!("🤖 Generating LLM plain-English summaries...");
+        let symbol_count = symbols.len();
+        let mut processed = 0;
+
+        for (symbol_name, entry) in symbols.iter_mut() {
+            processed += 1;
+            if processed % 10 == 0 {
+                println!("   Progress: {}/{}", processed, symbol_count);
+            }
+
+            // Get code context from chunks if available
+            let code_context = get_symbol_code_context(graph, symbol_name);
+
+            match engine.explain_symbol(
+                symbol_name,
+                &entry.kind,
+                entry.signature.as_deref(),
+                code_context.as_deref(),
+                &entry.summary,
+            ) {
+                Ok(llm_summary) => {
+                    entry.llm_summary = Some(llm_summary);
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Failed to generate LLM summary for '{}': {}", symbol_name, e);
+                }
+            }
+        }
+
+        println!("✅ Generated {} LLM summaries", processed);
+    }
+
     let tasks = generate_task_views(graph, &symbols);
     let impact_graph = build_impact_graph(graph);
     let quickstart = generate_quickstart(graph, &subsystems, &symbols, &impact_graph);
@@ -23,6 +69,21 @@ pub fn build_agent_index(graph: &ProjectGraph) -> AgentIndex {
         impact_graph,
         quickstart,
     }
+}
+
+/// Extract code context for a symbol from the project graph
+fn get_symbol_code_context(graph: &ProjectGraph, symbol_name: &str) -> Option<String> {
+    // Find the symbol in the graph
+    let symbol = graph.symbols.iter().find(|s| s.name == symbol_name)?;
+
+    // Get the first chunk for this symbol
+    let chunk_id = symbol.chunk_ids.first()?;
+
+    // Find the chunk in the graph
+    graph.chunks
+        .iter()
+        .find(|c| &c.id.0 == chunk_id)
+        .map(|c| c.text.clone())
 }
 
 /// Convert detected communities into labeled subsystems with role inference
@@ -422,6 +483,7 @@ fn build_symbol_table(
                 used_in_tests,
                 mentioned_in_docs,
                 usage_examples,
+                llm_summary: None, // Will be populated by build_agent_index_with_llm if LLM engine is provided
             },
         );
     }

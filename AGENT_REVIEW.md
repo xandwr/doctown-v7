@@ -1,18 +1,3 @@
-
-2. Add search_by_signature
-// search_symbols(query="fn new() -> Result")
-// search_symbols(query="impl Iterator for")
-This would be HUGE. I often know the shape of what I'm looking for but not the name.
-
-3. "Hot Spots" Analysis
-{
-  "most_modified": [...],  // from git history
-  "most_connected": [...], // from graph
-  "complexity_bombs": [...], // high cyclomatic complexity
-  "orphans": [...]  // low connectivity, might be dead code
-}
-This tells me "here's where the action is" or "here's the sketchy stuff."
-
 6. "Explain Like I'm 5" Mode
 // get_symbol("EmbeddingEngine", explain=true)
 // Returns: "This is the thing that turns text into numbers so we can compare meanings"

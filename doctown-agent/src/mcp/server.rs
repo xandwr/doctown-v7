@@ -48,6 +48,8 @@ pub struct McpServer {
     graph: doctown::docpack::GraphFile,
     embeddings: Vec<doctown::ingest::Embedding>,
     file_structure: Vec<doctown::docpack::FileStructureNode>,
+    documentation: doctown::docpack::DocumentationFile,
+    llm_engine: Option<doctown::llm::LlmEngine>, // Optional LLM for generating plain-English explanations
 }
 
 impl McpServer {
@@ -146,6 +148,28 @@ impl McpServer {
             serde_json::from_str(&content).context("Failed to parse filestructure.json")?
         };
 
+        // Load documentation
+        let documentation: doctown::docpack::DocumentationFile = {
+            let mut file = archive
+                .by_name("documentation.json")
+                .context("documentation.json not found in docpack")?;
+            let mut content = String::new();
+            std::io::Read::read_to_string(&mut file, &mut content)?;
+            serde_json::from_str(&content).context("Failed to parse documentation.json")?
+        };
+
+        // Try to initialize LLM engine (optional, gracefully handle if unavailable)
+        let llm_engine = match doctown::llm::LlmEngine::new(None) {
+            Ok(engine) => {
+                eprintln!("✅ LLM engine initialized (explain mode available)");
+                Some(engine)
+            }
+            Err(e) => {
+                eprintln!("⚠️  LLM engine unavailable: {} (explain mode disabled)", e);
+                None
+            }
+        };
+
         Ok(Self {
             docpack_path,
             agent_index,
@@ -153,6 +177,8 @@ impl McpServer {
             graph,
             embeddings,
             file_structure,
+            documentation,
+            llm_engine,
         })
     }
 
@@ -251,12 +277,27 @@ impl McpServer {
                 }
             }),
             json!({
+                "name": "search_by_signature",
+                "description": "Search for symbols by their signature/type shape. Useful when you know the structure but not the name. Examples: 'fn new() -> Result', 'impl Iterator for', 'fn(&self, String) -> Option'",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Signature pattern to search for (e.g., 'fn new() -> Result', 'impl Iterator for')"},
+                        "limit": {"type": "number", "description": "Maximum results to return (default: 20)"},
+                        "filter_subsystem": {"type": "string", "description": "Filter by subsystem name"},
+                        "filter_kind": {"type": "string", "description": "Filter by symbol kind (function, struct, etc.)"}
+                    },
+                    "required": ["query"]
+                }
+            }),
+            json!({
                 "name": "get_symbol",
                 "description": "Get detailed information about a specific symbol",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "name": {"type": "string", "description": "Symbol name"}
+                        "name": {"type": "string", "description": "Symbol name"},
+                        "explain": {"type": "boolean", "description": "Return plain-English \"Explain Like I'm 5\" summary (default: false)"}
                     },
                     "required": ["name"]
                 }
@@ -478,6 +519,18 @@ impl McpServer {
                     "required": ["symbol", "test_type"]
                 }
             }),
+            json!({
+                "name": "analyze_hotspots",
+                "description": "Analyze code hot spots: most modified files (git history), most connected symbols (graph), complexity bombs (high complexity), and orphans (low connectivity/dead code)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "number", "description": "Maximum number of items to return in each category (default: 10)"},
+                        "repo_path": {"type": "string", "description": "Path to the git repository (defaults to current directory)"},
+                        "commit_depth": {"type": "number", "description": "Number of commits to analyze for modification history (default: 100)"}
+                    }
+                }
+            }),
         ];
 
         Ok(json!({"tools": tools}))
@@ -494,6 +547,7 @@ impl McpServer {
 
         let result = match tool_name {
             "search_symbols" => self.tool_search_symbols(arguments)?,
+            "search_by_signature" => self.tool_search_by_signature(arguments)?,
             "get_symbol" => self.tool_get_symbol(arguments)?,
             "get_impact" => self.tool_get_impact(arguments)?,
             "get_dependencies" => self.tool_get_dependencies(arguments)?,
@@ -513,6 +567,7 @@ impl McpServer {
             "rewrite_chunk" => self.tool_rewrite_chunk(arguments)?,
             "update_file_section" => self.tool_update_file_section(arguments)?,
             "create_test_for_symbol" => self.tool_create_test_for_symbol(arguments)?,
+            "analyze_hotspots" => self.tool_analyze_hotspots(arguments)?,
             _ => return Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
 
@@ -533,13 +588,54 @@ impl McpServer {
         Ok(serde_json::to_value(response)?)
     }
 
+    fn tool_search_by_signature(&self, args: Option<Value>) -> Result<Value> {
+        let query: api::search::SignatureSearchQuery =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+        let response = api::search::signature_search(&query, &self.agent_index.symbols)?;
+        Ok(serde_json::to_value(response)?)
+    }
+
     fn tool_get_symbol(&self, args: Option<Value>) -> Result<Value> {
         let args = args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?;
         let name = args
             .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing symbol name"))?;
-        let result = api::search::get_symbol(name, &self.agent_index.symbols)?;
+        
+        let explain = args
+            .get("explain")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        
+        let mut result = api::search::get_symbol(name, &self.agent_index.symbols)?;
+        
+        // If explain=true, generate LLM summary on-demand if not already present
+        if explain {
+            if let Some(ref mut symbol) = result {
+                // If LLM summary doesn't exist and we have an LLM engine, generate it
+                if symbol.llm_summary.is_none() {
+                    if let Some(ref llm) = self.llm_engine {
+                        match llm.explain_symbol(
+                            name, // Use the name parameter from the request
+                            &symbol.kind,
+                            symbol.signature.as_deref(),
+                            None, // Could fetch from chunks if needed
+                            &symbol.summary,
+                        ) {
+                            Ok(explanation) => {
+                                symbol.llm_summary = Some(explanation);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to generate LLM summary for {}: {}", name, e);
+                            }
+                        }
+                    } else {
+                        eprintln!("LLM engine not available for explain mode");
+                    }
+                }
+            }
+        }
+        
         Ok(serde_json::to_value(result)?)
     }
 
@@ -744,6 +840,21 @@ impl McpServer {
             &self.chunks,
             &mut archive,
         )?;
+        Ok(serde_json::to_value(response)?)
+    }
+
+    fn tool_analyze_hotspots(&mut self, args: Option<Value>) -> Result<Value> {
+        let query: api::hotspots::HotSpotsQuery = if let Some(a) = args {
+            serde_json::from_value(a)?
+        } else {
+            api::hotspots::HotSpotsQuery {
+                limit: None,
+                repo_path: None,
+                commit_depth: None,
+            }
+        };
+
+        let response = api::hotspots::analyze_hotspots(&query, &self.agent_index, &self.graph, &self.documentation)?;
         Ok(serde_json::to_value(response)?)
     }
 }
