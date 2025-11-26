@@ -5,31 +5,37 @@ pub fn code_file_stats(bytes: &[u8], ext: &str) -> Option<(usize, usize, usize, 
     let mut code = 0;
     let mut comment = 0;
     let mut blank = 0;
-    
+
     let is_rust = ext == "rs";
     let is_python = ext == "py";
     let is_js_ts = ext == "js" || ext == "ts" || ext == "jsx" || ext == "tsx";
-    let is_c_family = ext == "cpp" || ext == "cc" || ext == "c" || ext == "h" || ext == "hpp" || ext == "cxx" || ext == "java";
+    let is_c_family = ext == "cpp"
+        || ext == "cc"
+        || ext == "c"
+        || ext == "h"
+        || ext == "hpp"
+        || ext == "cxx"
+        || ext == "java";
     let has_c_style_comments = is_rust || is_js_ts || is_c_family;
-    
+
     let mut in_multiline_comment = false;
-    
+
     for line in text.lines() {
         total += 1;
         let trimmed = line.trim();
-        
+
         if trimmed.is_empty() {
             blank += 1;
             continue;
         }
-        
+
         // Track multi-line comments for C-style languages
         if has_c_style_comments {
             // Check if we're entering a multi-line comment
             if trimmed.contains("/*") {
                 in_multiline_comment = true;
             }
-            
+
             // If in multi-line comment, count as comment
             if in_multiline_comment {
                 comment += 1;
@@ -39,14 +45,14 @@ pub fn code_file_stats(bytes: &[u8], ext: &str) -> Option<(usize, usize, usize, 
                 }
                 continue;
             }
-            
+
             // Single-line comment
             if trimmed.starts_with("//") {
                 comment += 1;
                 continue;
             }
         }
-        
+
         // Python comments
         if is_python {
             if trimmed.starts_with("#") {
@@ -59,11 +65,11 @@ pub fn code_file_stats(bytes: &[u8], ext: &str) -> Option<(usize, usize, usize, 
                 continue;
             }
         }
-        
+
         // If we get here, it's a code line
         code += 1;
     }
-    
+
     Some((total, code, comment, blank))
 }
 use anyhow::{Result, anyhow};
@@ -85,6 +91,19 @@ pub struct FileNode {
     pub path: String,
     pub bytes: Vec<u8>,
     pub kind: FileKind,
+}
+
+impl FileNode {
+    /// Determine the parent module based on the file path.
+    /// For example, "src/utils/helpers.rs" -> Some("src/utils")
+    /// Returns None for root-level files.
+    pub fn parent_module(&self) -> Option<String> {
+        let path = std::path::Path::new(&self.path);
+        path.parent()
+            .and_then(|p| p.to_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +376,10 @@ pub struct ChunkId(pub String);
 pub struct Chunk {
     pub id: ChunkId,
     pub text: String,
+    /// byte range (start, end) of this chunk in the original file
+    pub byte_range: Option<(usize, usize)>,
+    /// symbols that live inside this chunk
+    pub containing_symbols: Vec<String>, // symbol names
 }
 
 /// A comprehensive symbol node representation parsed from source files.
@@ -393,6 +416,8 @@ pub struct SymbolNode {
     pub is_mutable: bool,
     /// for trait items: whether it's unsafe, async, const
     pub modifiers: Vec<String>,
+    /// chunk IDs that contain this symbol
+    pub chunk_ids: Vec<String>,
 }
 
 /// Embedding vector placeholder.
@@ -402,15 +427,24 @@ pub type Embedding = Vec<f32>;
 /// A simple graph edge connecting two symbols/modules.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
+pub enum GraphEdgeKind {
+    SymbolToChunk,
+    SymbolToSymbol,
+    FileToFile,
+    ChunkToChunk,
+}
+
+#[derive(Debug, Clone)]
 pub struct GraphEdge {
     pub src: String,
     pub dst: String,
-    pub kind: String,
+    pub kind: GraphEdgeKind,
 }
 
 /// ProcessedFile is the executor output for a single file + plan.
 #[derive(Debug, Clone)]
 pub struct ProcessedFile {
+    pub file_node: FileNode,
     pub chunks: Vec<Chunk>,
     pub symbols: Vec<SymbolNode>,
     pub embeddings: Vec<Embedding>,
@@ -420,8 +454,9 @@ pub struct ProcessedFile {
 }
 
 impl ProcessedFile {
-    pub fn empty(_node: &FileNode) -> Self {
+    pub fn empty(node: &FileNode) -> Self {
         ProcessedFile {
+            file_node: node.clone(),
             chunks: Vec::new(),
             symbols: Vec::new(),
             embeddings: Vec::new(),
@@ -442,10 +477,10 @@ pub async fn process_file(node: &FileNode, plan: &ProcessingPlan) -> ProcessedFi
     let extracted = run_extractions(node, plan.get_extract());
 
     // 2) chunking
-    let chunks = run_chunking(node, &extracted, plan.get_chunking());
+    let mut chunks = run_chunking(node, &extracted, plan.get_chunking());
 
     // 3) symbols (optional)
-    let symbols = if plan.get_symbol_parse() {
+    let mut symbols = if plan.get_symbol_parse() {
         parse_symbols(node)
     } else {
         Vec::new()
@@ -458,10 +493,11 @@ pub async fn process_file(node: &FileNode, plan: &ProcessingPlan) -> ProcessedFi
         Vec::new()
     };
 
-    // 5) assembly -> produce graph edges
-    let assembled_edges = assemble_nodes(&chunks, &symbols, plan.get_assembly());
+    // 5) assembly -> produce graph edges and link chunks to symbols
+    let assembled_edges = assemble_nodes(&mut chunks, &mut symbols, plan.get_assembly());
 
     ProcessedFile {
+        file_node: node.clone(),
         chunks,
         symbols,
         embeddings,
@@ -519,6 +555,8 @@ fn run_chunking(
                 .map(|(_, t)| t.clone())
                 .collect::<Vec<_>>()
                 .join("\n"),
+            byte_range: None,
+            containing_symbols: Vec::new(),
         }],
         ChunkingStrategy::HeadingSections => {
             // split by markdown headings as simple heuristic
@@ -532,6 +570,8 @@ fn run_chunking(
                             out.push(Chunk {
                                 id: ChunkId(format!("h-{}-{}", i, j)),
                                 text: buffer.clone(),
+                                byte_range: None,
+                                containing_symbols: Vec::new(),
                             });
                             buffer.clear();
                         }
@@ -546,6 +586,8 @@ fn run_chunking(
                     out.push(Chunk {
                         id: ChunkId(format!("h-{}-tail", i)),
                         text: buffer,
+                        byte_range: None,
+                        containing_symbols: Vec::new(),
                     });
                 }
             }
@@ -553,6 +595,8 @@ fn run_chunking(
                 out.push(Chunk {
                     id: ChunkId("empty".to_string()),
                     text: String::new(),
+                    byte_range: None,
+                    containing_symbols: Vec::new(),
                 });
             }
             out
@@ -568,6 +612,8 @@ fn run_chunking(
                 out.push(Chunk {
                     id: ChunkId(format!("l-{}", i)),
                     text: chunk.join("\n"),
+                    byte_range: None,
+                    containing_symbols: Vec::new(),
                 });
             }
             out
@@ -587,6 +633,8 @@ fn run_chunking(
                 .map(|(i, s)| Chunk {
                     id: ChunkId(format!("d-{}", i)),
                     text: s.to_string(),
+                    byte_range: None,
+                    containing_symbols: Vec::new(),
                 })
                 .collect()
         }
@@ -612,6 +660,8 @@ fn ast_chunking(node: &FileNode) -> Vec<Chunk> {
             .map(|(i, s)| Chunk {
                 id: ChunkId(format!("c-{}", i)),
                 text: s.trim().to_string(),
+                byte_range: None,
+                containing_symbols: Vec::new(),
             })
             .collect();
     }
@@ -626,6 +676,8 @@ fn ast_chunking(node: &FileNode) -> Vec<Chunk> {
         return vec![Chunk {
             id: ChunkId("full".to_string()),
             text,
+            byte_range: None,
+            containing_symbols: Vec::new(),
         }];
     }
 
@@ -635,7 +687,9 @@ fn ast_chunking(node: &FileNode) -> Vec<Chunk> {
             return vec![Chunk {
                 id: ChunkId("full".to_string()),
                 text,
-            }]
+                byte_range: None,
+                containing_symbols: Vec::new(),
+            }];
         }
     };
 
@@ -648,32 +702,193 @@ fn ast_chunking(node: &FileNode) -> Vec<Chunk> {
         n.utf8_text(src).unwrap_or("").to_string()
     }
 
+    // Helper to extract chunks from container nodes (impl, trait, mod)
+    fn extract_method_chunks(
+        container: &tree_sitter::Node,
+        source: &[u8],
+        chunks: &mut Vec<Chunk>,
+        container_name: &str,
+    ) {
+        // Look for the declaration_list or body that contains the methods
+        let body = container.child_by_field_name("body").or_else(|| {
+            // If no body field, look for a declaration_list child
+            let mut cursor = container.walk();
+            container
+                .named_children(&mut cursor)
+                .find(|c| c.kind() == "declaration_list")
+        });
+
+        if let Some(body_node) = body {
+            let mut has_items = false;
+            let mut cursor = body_node.walk();
+
+            for child in body_node.named_children(&mut cursor) {
+                match child.kind() {
+                    "function_item" => {
+                        has_items = true;
+                        let start = child.start_byte();
+                        let end = child.end_byte();
+                        let chunk_text = child.utf8_text(source).unwrap_or("").to_string();
+
+                        let method_name = child
+                            .child_by_field_name("name")
+                            .and_then(|n| n.utf8_text(source).ok())
+                            .unwrap_or("anon");
+
+                        chunks.push(Chunk {
+                            id: ChunkId(format!(
+                                "{}::{}:{}-{}",
+                                container_name, method_name, start, end
+                            )),
+                            text: chunk_text,
+                            byte_range: Some((start, end)),
+                            containing_symbols: Vec::new(),
+                        });
+                    }
+                    "const_item" | "type_item" | "associated_type" => {
+                        has_items = true;
+                        let start = child.start_byte();
+                        let end = child.end_byte();
+                        let chunk_text = child.utf8_text(source).unwrap_or("").to_string();
+
+                        let item_name = child
+                            .child_by_field_name("name")
+                            .and_then(|n| n.utf8_text(source).ok())
+                            .unwrap_or("anon");
+
+                        chunks.push(Chunk {
+                            id: ChunkId(format!(
+                                "{}::{}:{}-{}",
+                                container_name, item_name, start, end
+                            )),
+                            text: chunk_text,
+                            byte_range: Some((start, end)),
+                            containing_symbols: Vec::new(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+
+            // If we found items, we're done
+            if has_items {
+                return;
+            }
+        }
+
+        // If no methods/items were found, chunk the entire container
+        let start = container.start_byte();
+        let end = container.end_byte();
+        let chunk_text = container.utf8_text(source).unwrap_or("").to_string();
+        chunks.push(Chunk {
+            id: ChunkId(format!("{}:{}-{}", container_name, start, end)),
+            text: chunk_text,
+            byte_range: Some((start, end)),
+            containing_symbols: Vec::new(),
+        });
+    }
+
     // Walk top-level items and create chunks
     let mut cursor = root.walk();
     for child in root.named_children(&mut cursor) {
         let kind = child.kind();
-        
-        // Top-level items we want to chunk
+
         match kind {
-            "function_item" | "struct_item" | "enum_item" | "trait_item" 
-            | "impl_item" | "mod_item" | "const_item" | "static_item" 
-            | "type_item" | "macro_definition" | "use_declaration" => {
+            "function_item" => {
+                // Top-level function: one chunk per function
                 let start = child.start_byte();
                 let end = child.end_byte();
                 let chunk_text = node_text(&child, source);
-                
-                // Create a meaningful chunk ID
+
+                let fn_name = child
+                    .child_by_field_name("name")
+                    .map(|n| node_text(&n, source))
+                    .unwrap_or_else(|| "anon_fn".to_string());
+
+                chunks.push(Chunk {
+                    id: ChunkId(format!("fn::{}:{}-{}", fn_name, start, end)),
+                    text: chunk_text,
+                    byte_range: Some((start, end)),
+                    containing_symbols: Vec::new(),
+                });
+            }
+            "impl_item" => {
+                // Impl block: chunk each method separately
+                let target = child
+                    .child_by_field_name("type")
+                    .and_then(|c| c.utf8_text(source).ok())
+                    .unwrap_or("impl");
+
+                let trait_name = child
+                    .child_by_field_name("trait")
+                    .and_then(|t| t.utf8_text(source).ok());
+
+                let impl_name = if let Some(trait_impl) = trait_name {
+                    format!("impl {} for {}", trait_impl, target)
+                } else {
+                    format!("impl {}", target)
+                };
+
+                extract_method_chunks(&child, source, &mut chunks, &impl_name);
+            }
+            "trait_item" => {
+                // Trait: chunk each method separately
+                let trait_name = child
+                    .child_by_field_name("name")
+                    .map(|n| node_text(&n, source))
+                    .unwrap_or_else(|| "anon_trait".to_string());
+
+                extract_method_chunks(
+                    &child,
+                    source,
+                    &mut chunks,
+                    &format!("trait {}", trait_name),
+                );
+            }
+            "mod_item" => {
+                // Mod: if it has inline content, chunk its items; otherwise chunk the whole mod
+                let mod_name = child
+                    .child_by_field_name("name")
+                    .map(|n| node_text(&n, source))
+                    .unwrap_or_else(|| "anon_mod".to_string());
+
+                // For now, chunk the entire mod declaration
+                let start = child.start_byte();
+                let end = child.end_byte();
+                let chunk_text = node_text(&child, source);
+
+                chunks.push(Chunk {
+                    id: ChunkId(format!("mod::{}:{}-{}", mod_name, start, end)),
+                    text: chunk_text,
+                    byte_range: Some((start, end)),
+                    containing_symbols: Vec::new(),
+                });
+            }
+            "struct_item" | "enum_item" | "const_item" | "static_item" | "type_item"
+            | "macro_definition" | "use_declaration" => {
+                // Other top-level items: one chunk per item
+                let start = child.start_byte();
+                let end = child.end_byte();
+                let chunk_text = node_text(&child, source);
+
                 let item_name = child
                     .child_by_field_name("name")
                     .map(|n| node_text(&n, source))
                     .unwrap_or_else(|| kind.to_string());
-                
+
                 chunks.push(Chunk {
-                    id: ChunkId(format!("{}:{}-{}", item_name, start, end)),
+                    id: ChunkId(format!(
+                        "{}::{}:{}-{}",
+                        kind.trim_end_matches("_item"),
+                        item_name,
+                        start,
+                        end
+                    )),
                     text: chunk_text,
+                    byte_range: Some((start, end)),
+                    containing_symbols: Vec::new(),
                 });
             }
-            // Skip comments, attributes at module level - they'll be included with their items
             _ => {}
         }
     }
@@ -683,6 +898,8 @@ fn ast_chunking(node: &FileNode) -> Vec<Chunk> {
         chunks.push(Chunk {
             id: ChunkId("full".to_string()),
             text,
+            byte_range: None,
+            containing_symbols: Vec::new(),
         });
     }
 
@@ -899,6 +1116,7 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes,
                     is_mutable: false,
                     modifiers: extract_modifiers(&n),
+                    chunk_ids: Vec::new(),
                 });
             }
             "struct_item" => {
@@ -936,7 +1154,15 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes,
                     is_mutable: false,
                     modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
                 });
+
+                // Walk struct fields
+                let mut cursor = n.walk();
+                for child in n.named_children(&mut cursor) {
+                    walk_node(child, src, lines, symbols, Some(name.clone()));
+                }
+                return;
             }
             "enum_item" => {
                 let name = n
@@ -973,7 +1199,15 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes,
                     is_mutable: false,
                     modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
                 });
+
+                // Walk enum variants
+                let mut cursor = n.walk();
+                for child in n.named_children(&mut cursor) {
+                    walk_node(child, src, lines, symbols, Some(name.clone()));
+                }
+                return;
             }
             "trait_item" => {
                 let name = n
@@ -1010,7 +1244,15 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes,
                     is_mutable: false,
                     modifiers: extract_modifiers(&n),
+                    chunk_ids: Vec::new(),
                 });
+
+                // Walk trait methods
+                let mut cursor = n.walk();
+                for child in n.named_children(&mut cursor) {
+                    walk_node(child, src, lines, symbols, Some(name.clone()));
+                }
+                return;
             }
             "impl_item" => {
                 // Extract the target type and optional trait
@@ -1061,6 +1303,7 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes,
                     is_mutable: false,
                     modifiers: extract_modifiers(&n),
+                    chunk_ids: Vec::new(),
                 });
 
                 // walk children with parent_name = target_name so methods become linked
@@ -1108,6 +1351,7 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes,
                     is_mutable: false,
                     modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
                 });
             }
             "use_declaration" => {
@@ -1140,6 +1384,7 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes: Vec::new(),
                     is_mutable: false,
                     modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
                 });
             }
             "const_item" => {
@@ -1179,6 +1424,7 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes,
                     is_mutable: false,
                     modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
                 });
             }
             "static_item" => {
@@ -1222,6 +1468,7 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes,
                     is_mutable: is_mut,
                     modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
                 });
             }
             "mod_item" => {
@@ -1259,6 +1506,7 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes,
                     is_mutable: false,
                     modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
                 });
             }
             "macro_definition" => {
@@ -1296,6 +1544,123 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
                     attributes,
                     is_mutable: false,
                     modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
+                });
+            }
+            "field_declaration" => {
+                let name = n
+                    .child_by_field_name("name")
+                    .and_then(|c| c.utf8_text(src).ok().map(|s| s.to_string()))
+                    .or_else(|| find_identifier(n, src))
+                    .unwrap_or_else(|| "<anon_field>".to_string());
+                let start = n.start_byte();
+                let end = n.end_byte();
+                let start_pos = (
+                    n.start_position().row as usize,
+                    n.start_position().column as usize,
+                );
+                let end_pos = (
+                    n.end_position().row as usize,
+                    n.end_position().column as usize,
+                );
+                let (docs, attributes) = collect_docs_and_attrs(lines, start_pos.0);
+
+                let field_type = n.child_by_field_name("type").map(|t| node_text(&t, src));
+
+                symbols.push(SymbolNode {
+                    name: name.clone(),
+                    kind: "field".to_string(),
+                    byte_range: Some((start, end)),
+                    start_pos: Some(start_pos),
+                    end_pos: Some(end_pos),
+                    parent: parent_name.clone(),
+                    docs,
+                    visibility: extract_visibility(&n, src),
+                    parameters: None,
+                    return_type: None,
+                    generics: None,
+                    trait_impl: None,
+                    field_type,
+                    attributes,
+                    is_mutable: false,
+                    modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
+                });
+            }
+            "enum_variant" => {
+                let name = n
+                    .child_by_field_name("name")
+                    .and_then(|c| c.utf8_text(src).ok().map(|s| s.to_string()))
+                    .or_else(|| find_identifier(n, src))
+                    .unwrap_or_else(|| "<anon_variant>".to_string());
+                let start = n.start_byte();
+                let end = n.end_byte();
+                let start_pos = (
+                    n.start_position().row as usize,
+                    n.start_position().column as usize,
+                );
+                let end_pos = (
+                    n.end_position().row as usize,
+                    n.end_position().column as usize,
+                );
+                let (docs, attributes) = collect_docs_and_attrs(lines, start_pos.0);
+
+                symbols.push(SymbolNode {
+                    name: name.clone(),
+                    kind: "variant".to_string(),
+                    byte_range: Some((start, end)),
+                    start_pos: Some(start_pos),
+                    end_pos: Some(end_pos),
+                    parent: parent_name.clone(),
+                    docs,
+                    visibility: None,
+                    parameters: None,
+                    return_type: None,
+                    generics: None,
+                    trait_impl: None,
+                    field_type: None,
+                    attributes,
+                    is_mutable: false,
+                    modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
+                });
+            }
+            "associated_type" => {
+                let name = n
+                    .child_by_field_name("name")
+                    .and_then(|c| c.utf8_text(src).ok().map(|s| s.to_string()))
+                    .or_else(|| find_identifier(n, src))
+                    .unwrap_or_else(|| "<anon_assoc_type>".to_string());
+                let start = n.start_byte();
+                let end = n.end_byte();
+                let start_pos = (
+                    n.start_position().row as usize,
+                    n.start_position().column as usize,
+                );
+                let end_pos = (
+                    n.end_position().row as usize,
+                    n.end_position().column as usize,
+                );
+                let (docs, attributes) = collect_docs_and_attrs(lines, start_pos.0);
+
+                symbols.push(SymbolNode {
+                    name: name.clone(),
+                    kind: "associated_type".to_string(),
+                    byte_range: Some((start, end)),
+                    start_pos: Some(start_pos),
+                    end_pos: Some(end_pos),
+                    parent: parent_name.clone(),
+                    docs,
+                    visibility: None,
+                    parameters: None,
+                    return_type: None,
+                    generics: None,
+                    trait_impl: None,
+                    field_type: None,
+                    attributes,
+                    is_mutable: false,
+                    modifiers: Vec::new(),
+                    chunk_ids: Vec::new(),
                 });
             }
             _ => {}
@@ -1320,32 +1685,120 @@ async fn embed_chunks(_chunks: &Vec<Chunk>) -> Vec<Embedding> {
     Vec::new()
 }
 
-/// Assemble nodes; placeholder returns nothing but could build edges in future.
+/// Assemble nodes and establish explicit chunk-symbol relationships based on byte ranges.
 fn assemble_nodes(
-    _chunks: &Vec<Chunk>,
-    _symbols: &Vec<SymbolNode>,
+    chunks: &mut Vec<Chunk>,
+    symbols: &mut Vec<SymbolNode>,
     _strategy: &AssemblyStrategy,
 ) -> Vec<GraphEdge> {
     let mut edges = Vec::new();
 
-    // link methods/impls to their parent types
-    for s in _symbols.iter() {
+    // Build chunk-symbol relationships based on byte range overlaps
+    for chunk in chunks.iter_mut() {
+        if let Some(chunk_range) = chunk.byte_range {
+            let chunk_start = chunk_range.0;
+            let chunk_end = chunk_range.1;
+            
+            for symbol in symbols.iter() {
+                if let Some(symbol_range) = symbol.byte_range {
+                    let symbol_start = symbol_range.0;
+                    let symbol_end = symbol_range.1;
+                    
+                    // Check if symbol is contained within chunk
+                    // (symbol starts at or after chunk start AND symbol ends at or before chunk end)
+                    if symbol_start >= chunk_start && symbol_end <= chunk_end {
+                        chunk.containing_symbols.push(symbol.name.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Build symbol -> chunk relationships (inverse of above)
+    for symbol in symbols.iter_mut() {
+        if let Some(symbol_range) = symbol.byte_range {
+            let symbol_start = symbol_range.0;
+            let symbol_end = symbol_range.1;
+            
+            for chunk in chunks.iter() {
+                if let Some(chunk_range) = chunk.byte_range {
+                    let chunk_start = chunk_range.0;
+                    let chunk_end = chunk_range.1;
+                    
+                    // Check if symbol is contained within chunk
+                    if symbol_start >= chunk_start && symbol_end <= chunk_end {
+                        symbol.chunk_ids.push(chunk.id.0.clone());
+                        
+                        // Add Symbol -> Chunk edge
+                        edges.push(GraphEdge {
+                            src: symbol.name.clone(),
+                            dst: chunk.id.0.clone(),
+                            kind: GraphEdgeKind::SymbolToChunk,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Symbol → Symbol: parent relationships (methods/impls to their parent types)
+    for s in symbols.iter() {
         if let Some(parent) = &s.parent {
             edges.push(GraphEdge {
                 src: s.name.clone(),
                 dst: parent.clone(),
-                kind: "child_of".to_string(),
+                kind: GraphEdgeKind::SymbolToSymbol,
             });
         }
     }
 
-    // Add an edge for impl symbols to indicate implementation presence
-    for s in _symbols.iter().filter(|s| s.kind == "impl") {
-        edges.push(GraphEdge {
-            src: s.name.clone(),
-            dst: s.name.clone(),
-            kind: "impl_of".to_string(),
-        });
+    // Symbol → Symbol: struct fields to their parent struct
+    for s in symbols.iter().filter(|s| s.kind == "field") {
+        if let Some(parent) = &s.parent {
+            edges.push(GraphEdge {
+                src: parent.clone(),
+                dst: s.name.clone(),
+                kind: GraphEdgeKind::SymbolToSymbol,
+            });
+        }
+    }
+
+    // Symbol → Symbol: enum variants to their parent enum
+    for s in symbols.iter().filter(|s| s.kind == "variant") {
+        if let Some(parent) = &s.parent {
+            edges.push(GraphEdge {
+                src: parent.clone(),
+                dst: s.name.clone(),
+                kind: GraphEdgeKind::SymbolToSymbol,
+            });
+        }
+    }
+
+    // Symbol → Symbol: impl blocks ownership
+    // Connect impl blocks to the type they implement for
+    for s in symbols.iter().filter(|s| s.kind == "impl") {
+        // impl blocks should have their name as "impl TypeName" or similar
+        // Extract the type name from the impl block name
+        let impl_name = s.name.clone();
+        if impl_name.starts_with("impl ") {
+            let type_name = impl_name.trim_start_matches("impl ").split('<').next().unwrap_or("").trim();
+            if !type_name.is_empty() {
+                edges.push(GraphEdge {
+                    src: type_name.to_string(),
+                    dst: impl_name.clone(),
+                    kind: GraphEdgeKind::SymbolToSymbol,
+                });
+            }
+        }
+        
+        // If it's a trait impl, link to the trait
+        if let Some(trait_impl) = &s.trait_impl {
+            edges.push(GraphEdge {
+                src: impl_name.clone(),
+                dst: trait_impl.clone(),
+                kind: GraphEdgeKind::SymbolToSymbol,
+            });
+        }
     }
 
     edges
@@ -1721,4 +2174,95 @@ async fn load_zip_from_url(url: Url) -> Result<Vec<u8>> {
     let client = Client::new();
     let res = client.get(url.clone()).send().await?.error_for_status()?;
     Ok(res.bytes().await?.to_vec())
+}
+
+pub struct ProjectGraph {
+    pub files: Vec<FileNode>,
+    pub symbols: Vec<SymbolNode>,
+    pub chunks: Vec<Chunk>,
+    pub edges: Vec<GraphEdge>,
+}
+
+impl ProjectGraph {
+    pub fn from_processed_files(files: Vec<ProcessedFile>) -> Self {
+        let mut graph = ProjectGraph {
+            files: files.iter().map(|f| f.file_node.clone()).collect(),
+            symbols: files.iter().flat_map(|f| f.symbols.clone()).collect(),
+            chunks: files.iter().flat_map(|f| f.chunks.clone()).collect(),
+            edges: files.iter().flat_map(|f| f.graph_edges.clone()).collect(),
+        };
+
+        // File → File: module hierarchy edges
+        // Connect parent modules to child modules based on file paths
+        for file in &graph.files {
+            if let Some(parent_path) = file.parent_module() {
+                graph.edges.push(GraphEdge {
+                    src: parent_path,
+                    dst: file.path.clone(),
+                    kind: GraphEdgeKind::FileToFile,
+                });
+            }
+        }
+
+        // Chunk → Chunk: sequential flow edges
+        // Connect chunks within the same file in sequential order
+        for pf in &files {
+            let file_chunks = &pf.chunks;
+            for i in 0..file_chunks.len().saturating_sub(1) {
+                let current = &file_chunks[i];
+                let next = &file_chunks[i + 1];
+                
+                graph.edges.push(GraphEdge {
+                    src: current.id.0.clone(),
+                    dst: next.id.0.clone(),
+                    kind: GraphEdgeKind::ChunkToChunk,
+                });
+            }
+        }
+
+        graph
+    }
+
+    /// Print a summary of the graph structure
+    pub fn print_summary(&self) {
+        println!("\n=== Project Graph Summary ===");
+        println!("Files: {}", self.files.len());
+        println!("Symbols: {}", self.symbols.len());
+        println!("Chunks: {}", self.chunks.len());
+        println!("Edges: {}", self.edges.len());
+        
+        // Count edges by type
+        let mut symbol_to_chunk = 0;
+        let mut symbol_to_symbol = 0;
+        let mut file_to_file = 0;
+        let mut chunk_to_chunk = 0;
+        
+        for edge in &self.edges {
+            match edge.kind {
+                GraphEdgeKind::SymbolToChunk => symbol_to_chunk += 1,
+                GraphEdgeKind::SymbolToSymbol => symbol_to_symbol += 1,
+                GraphEdgeKind::FileToFile => file_to_file += 1,
+                GraphEdgeKind::ChunkToChunk => chunk_to_chunk += 1,
+            }
+        }
+        
+        println!("\nEdge breakdown:");
+        println!("  Symbol → Chunk: {}", symbol_to_chunk);
+        println!("  Symbol → Symbol: {}", symbol_to_symbol);
+        println!("  File → File: {}", file_to_file);
+        println!("  Chunk → Chunk: {}", chunk_to_chunk);
+        
+        // Count symbols by kind
+        let mut symbol_kinds = std::collections::HashMap::new();
+        for symbol in &self.symbols {
+            *symbol_kinds.entry(symbol.kind.clone()).or_insert(0) += 1;
+        }
+        
+        println!("\nSymbol breakdown:");
+        let mut kinds: Vec<_> = symbol_kinds.iter().collect();
+        kinds.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        for (kind, count) in kinds {
+            println!("  {}: {}", kind, count);
+        }
+    }
 }

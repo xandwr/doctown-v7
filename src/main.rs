@@ -2,7 +2,7 @@
 
 mod ingest;
 use anyhow::Result;
-use ingest::{load_zip, unzip_to_memory, code_file_stats, FileKind};
+use ingest::{FileKind, code_file_stats, load_zip, unzip_to_memory};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,15 +22,25 @@ async fn main() -> Result<()> {
     println!("Processed {} files:", processed.len());
     for pf in &processed {
         // Get filename and kind from metadata
-        let filename = pf.metadata.get("path").cloned()
+        let filename = pf
+            .metadata
+            .get("path")
+            .cloned()
             .or_else(|| pf.metadata.get("filename").cloned())
             .unwrap_or_default();
-        let filetype = pf.metadata.get("filetype").cloned()
+        let filetype = pf
+            .metadata
+            .get("filetype")
+            .cloned()
             .or_else(|| pf.metadata.get("language").cloned())
             .unwrap_or_default();
 
         // Filter out entries with missing/unknown filename or filetype
-        if filename.is_empty() || filetype.is_empty() || filename == "<unknown>" || filetype == "<unknown>" {
+        if filename.is_empty()
+            || filetype.is_empty()
+            || filename == "<unknown>"
+            || filetype == "<unknown>"
+        {
             continue;
         }
 
@@ -41,7 +51,10 @@ async fn main() -> Result<()> {
         if ["rs", "py", "js", "ts", "cpp", "java"].contains(&filetype.as_str()) {
             if let Some(stats) = code_file_stats(&pf.original_bytes, &filetype) {
                 let (total, code, comment, blank) = stats;
-                print!(" | lines={} code={} comment={} blank={}", total, code, comment, blank);
+                print!(
+                    " | lines={} code={} comment={} blank={}",
+                    total, code, comment, blank
+                );
             }
         }
 
@@ -53,7 +66,115 @@ async fn main() -> Result<()> {
             pf.embeddings.len(),
             pf.metadata.len()
         );
+
+        // Print detailed symbol breakdown for code files
+        if !pf.symbols.is_empty() {
+            let mut symbol_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for sym in &pf.symbols {
+                *symbol_counts.entry(sym.kind.clone()).or_insert(0) += 1;
+            }
+            let mut kinds: Vec<_> = symbol_counts.iter().collect();
+            kinds.sort_by_key(|(k, _)| *k);
+            print!("   └─ symbols: ");
+            for (i, (kind, count)) in kinds.iter().enumerate() {
+                if i > 0 {
+                    print!(", ");
+                }
+                print!("{}={}", kind, count);
+            }
+            println!();
+        }
+
+        // Show first few chunk IDs to verify granularity
+        if pf.chunks.len() > 0 && filetype == "rs" {
+            print!("   └─ chunks: ");
+            for (i, chunk) in pf.chunks.iter().take(8).enumerate() {
+                if i > 0 {
+                    print!(", ");
+                }
+                // Extract readable name from chunk ID
+                let id = &chunk.id.0;
+                // Format: "container::method:start-end" or "item::name:start-end"
+                let readable = if let Some(double_colon_pos) = id.find("::") {
+                    // Has a parent container
+                    let after_double = &id[double_colon_pos + 2..];
+                    if let Some(single_colon_pos) = after_double.find(':') {
+                        &after_double[..single_colon_pos]
+                    } else {
+                        &id[..double_colon_pos]
+                    }
+                } else if let Some(single_colon_pos) = id.find(':') {
+                    // No parent container
+                    &id[..single_colon_pos]
+                } else {
+                    id
+                };
+                print!("{}", readable);
+            }
+            if pf.chunks.len() > 8 {
+                print!(" ... (+{})", pf.chunks.len() - 8);
+            }
+            println!();
+        }
+
+        // Print explicit chunk-symbol relationships for code files
+        if !pf.chunks.is_empty() && !pf.symbols.is_empty() && filetype == "rs" {
+            println!("\n   🔗 CHUNK-SYMBOL RELATIONSHIPS:");
+            
+            // Show chunks and their contained symbols
+            for chunk in pf.chunks.iter().take(5) {
+                let chunk_name = &chunk.id.0;
+                println!("      Chunk: {}", chunk_name);
+                if chunk.containing_symbols.is_empty() {
+                    println!("        └─ (no symbols in this chunk)");
+                } else {
+                    println!("        └─ contains {} symbol(s):", chunk.containing_symbols.len());
+                    for (i, sym_name) in chunk.containing_symbols.iter().enumerate() {
+                        if i < 5 {
+                            // Find symbol details
+                            if let Some(sym) = pf.symbols.iter().find(|s| &s.name == sym_name) {
+                                println!("           • {} ({})", sym.name, sym.kind);
+                            }
+                        }
+                    }
+                    if chunk.containing_symbols.len() > 5 {
+                        println!("           ... and {} more", chunk.containing_symbols.len() - 5);
+                    }
+                }
+            }
+            if pf.chunks.len() > 5 {
+                println!("      ... and {} more chunks\n", pf.chunks.len() - 5);
+            }
+
+            // Show symbols and which chunks they're in
+            println!("   🔗 SYMBOL-CHUNK RELATIONSHIPS:");
+            for symbol in pf.symbols.iter().take(5) {
+                println!("      Symbol: {} ({})", symbol.name, symbol.kind);
+                if symbol.chunk_ids.is_empty() {
+                    println!("        └─ (not in any chunk)");
+                } else {
+                    println!("        └─ lives in {} chunk(s):", symbol.chunk_ids.len());
+                    for (i, chunk_id) in symbol.chunk_ids.iter().enumerate() {
+                        if i < 3 {
+                            println!("           • {}", chunk_id);
+                        }
+                    }
+                    if symbol.chunk_ids.len() > 3 {
+                        println!("           ... and {} more", symbol.chunk_ids.len() - 3);
+                    }
+                }
+            }
+            if pf.symbols.len() > 5 {
+                println!("      ... and {} more symbols\n", pf.symbols.len() - 5);
+            }
+        }
     }
+
+    // Build the semantic project graph
+    println!("\n=== Building Semantic Project Graph ===");
+    let graph = ingest::ProjectGraph::from_processed_files(processed);
+    graph.print_summary();
 
     // Pass bytes into the pipeline later
     // ingest::run(zip_bytes).await?;
