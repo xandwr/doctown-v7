@@ -156,8 +156,33 @@ async fn main() -> Result<()> {
 
         // Print detailed code stats for code files
         if ["rs", "py", "js", "ts", "cpp", "java"].contains(&filetype.as_str()) {
-            if let Some(stats) = code_file_stats(&pf.original_bytes, &filetype) {
-                let (total, code, comment, blank) = stats;
+            // Prefer original bytes when available; otherwise fall back to stored metadata
+            let stats_opt = if !pf.original_bytes.is_empty() {
+                code_file_stats(&pf.original_bytes, &filetype)
+            } else if let Some(total_s) = pf.metadata.get("loc_total") {
+                // Parse stored metadata fields inserted during ingestion
+                let total = total_s.parse::<usize>().unwrap_or(0);
+                let code = pf
+                    .metadata
+                    .get("loc_code")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let comment = pf
+                    .metadata
+                    .get("loc_comment")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let blank = pf
+                    .metadata
+                    .get("loc_blank")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+                Some((total, code, comment, blank))
+            } else {
+                None
+            };
+
+            if let Some((total, code, comment, blank)) = stats_opt {
                 print!(
                     " | lines={} code={} comment={} blank={}",
                     total, code, comment, blank

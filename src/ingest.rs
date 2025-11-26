@@ -2313,7 +2313,21 @@ pub async fn unzip_to_memory_parallel(
 
         // Build graph connectivity
         let graph_edges = assemble_nodes(&mut chunks, &mut symbols, plan.get_assembly());
-        let metadata = compute_metadata(&node, plan.get_metadata());
+        let mut metadata = compute_metadata(&node, plan.get_metadata());
+
+        // Compute and store file-level LOC metrics (run on original file bytes
+        // before/independent of chunking). This preserves realistic file metrics
+        // even when `ProcessedFile::original_bytes` is dropped to save memory.
+        let ext = std::path::Path::new(&node.path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if let Some((total, code, comment, blank)) = code_file_stats(&node.bytes, ext) {
+            metadata.insert("loc_total".to_string(), total.to_string());
+            metadata.insert("loc_code".to_string(), code.to_string());
+            metadata.insert("loc_comment".to_string(), comment.to_string());
+            metadata.insert("loc_blank".to_string(), blank.to_string());
+        }
 
         processed.push(ProcessedFile {
             file_node: node,
