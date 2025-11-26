@@ -1,7 +1,9 @@
 // main.rs
 
+mod docpack;
 mod embedding;
 mod ingest;
+
 use anyhow::Result;
 use ingest::{code_file_stats, load_zip, unzip_to_memory};
 
@@ -187,11 +189,39 @@ async fn main() -> Result<()> {
 
     // Build the semantic project graph
     println!("\n=== Building Semantic Project Graph ===");
-    let graph = ingest::ProjectGraph::from_processed_files(processed);
+    let graph = ingest::ProjectGraph::from_processed_files(processed.clone());
     graph.print_summary();
 
-    // Pass bytes into the pipeline later
-    // ingest::run(zip_bytes).await?;
+    // Generate .docpack file
+    println!("\n=== Generating .docpack file ===");
+    let mut builder = docpack::DocpackBuilder::new(Some(source.to_string()));
+    builder.process_files(processed)?;
+
+    // Determine output filename - always use simple name in current directory
+    let output_path = if source.contains("github.com") {
+        // Extract repo name from URL like: https://github.com/user/repo/archive/refs/heads/main.zip
+        let parts: Vec<&str> = source.split('/').collect();
+        // Find "github.com" and get the repo name (2 positions after)
+        if let Some(pos) = parts.iter().position(|&p| p == "github.com") {
+            if pos + 2 < parts.len() {
+                format!("{}.docpack", parts[pos + 2])
+            } else {
+                "output.docpack".to_string()
+            }
+        } else {
+            "output.docpack".to_string()
+        }
+    } else if source.ends_with(".zip") {
+        // Local file - just replace extension
+        let path = std::path::Path::new(source);
+        let filename = path.file_stem().unwrap_or_default().to_string_lossy();
+        format!("{}.docpack", filename)
+    } else {
+        "output.docpack".to_string()
+    };
+
+    builder.write_to_file(&output_path)?;
+    println!("✅ Generated: {}", output_path);
 
     Ok(())
 }
