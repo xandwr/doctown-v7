@@ -1,0 +1,211 @@
+{
+  "name": "doctown-agent",
+  "version": "7.0.0",
+  "description": "MCP server for querying and navigating doctown .docpack files",
+  "author": "doctown",
+  "license": "MIT",
+  "protocol_version": "2024-11-05",
+  "capabilities": {
+    "tools": true
+  },
+  "tools": [
+    {
+      "name": "search_symbols",
+      "description": "Search for symbols (functions, structs, types) by name or content using keyword search. Returns ranked results with summaries.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query string"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of results to return (default: 20)"
+          },
+          "filter_subsystem": {
+            "type": "string",
+            "description": "Filter results to specific subsystem/module"
+          },
+          "filter_kind": {
+            "type": "string",
+            "description": "Filter by symbol kind (function, struct, type, enum, trait, etc.)"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "get_symbol",
+      "description": "Get detailed information about a specific symbol including its location, kind, subsystem, summary, and related symbols.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Exact symbol name to lookup"
+          }
+        },
+        "required": ["name"]
+      }
+    },
+    {
+      "name": "get_impact",
+      "description": "Find all symbols that depend on the given symbol (forward impact analysis). Useful for understanding the ripple effects of changes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "Symbol name to analyze"
+          },
+          "max_depth": {
+            "type": "number",
+            "description": "Maximum dependency depth to traverse (default: 5)"
+          }
+        },
+        "required": ["symbol"]
+      }
+    },
+    {
+      "name": "get_dependencies",
+      "description": "Find all symbols that the given symbol depends on (reverse dependency analysis). Shows what a symbol needs to function.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "Symbol name to analyze"
+          },
+          "max_depth": {
+            "type": "number",
+            "description": "Maximum dependency depth to traverse (default: 5)"
+          }
+        },
+        "required": ["symbol"]
+      }
+    },
+    {
+      "name": "find_path",
+      "description": "Find the shortest dependency path between two symbols in the codebase. Useful for understanding relationships.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Source symbol name"
+          },
+          "to": {
+            "type": "string",
+            "description": "Target symbol name"
+          },
+          "max_depth": {
+            "type": "number",
+            "description": "Maximum path length to search (default: 10)"
+          }
+        },
+        "required": ["from", "to"]
+      }
+    },
+    {
+      "name": "list_subsystems",
+      "description": "List all detected subsystems/modules in the codebase with their confidence scores, roles, and member symbols.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Filter by subsystem name (substring match)"
+          },
+          "min_confidence": {
+            "type": "number",
+            "description": "Minimum confidence score threshold (0.0 to 1.0)"
+          }
+        }
+      }
+    },
+    {
+      "name": "get_subsystem",
+      "description": "Get detailed information about a specific subsystem including all member symbols with their details.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Exact subsystem name"
+          }
+        },
+        "required": ["name"]
+      }
+    },
+    {
+      "name": "get_quickstart",
+      "description": "Get a quickstart guide for navigating the codebase with entry points, core types, most connected symbols, and subsystem overview.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_task_view",
+      "description": "Get symbols relevant to a specific development task. Helps identify what code to focus on for features, bugs, or refactoring.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_type": {
+            "type": "string",
+            "description": "Type of task (e.g., 'add_feature', 'fix_bug', 'refactor', 'optimize')"
+          },
+          "context": {
+            "type": "string",
+            "description": "Additional context or keywords about the task"
+          }
+        },
+        "required": ["task_type"]
+      }
+    },
+    {
+      "name": "read_file",
+      "description": "Read the complete source code of a file from the docpack archive.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "File path relative to project root"
+          }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "get_symbol_content",
+      "description": "Get the source code content for a specific symbol with its surrounding context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "Symbol name to get content for"
+          }
+        },
+        "required": ["symbol"]
+      }
+    },
+    {
+      "name": "list_files",
+      "description": "List all source files in the codebase.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "configuration": {
+    "docpack_path": {
+      "type": "string",
+      "description": "Path to the .docpack file to serve",
+      "required": true
+    }
+  }
+}

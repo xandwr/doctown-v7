@@ -1,8 +1,20 @@
+[workspace]
+members = [".", "doctown-agent"]
+resolver = "2"
+
 [package]
 name = "doctown"
 version = "7.0.0"
 edition = "2024"
 publish = false
+
+[lib]
+name = "doctown"
+path = "src/lib.rs"
+
+[[bin]]
+name = "doctown"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"

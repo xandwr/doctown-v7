@@ -472,6 +472,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "doctown-agent"
+version = "7.0.0"
+dependencies = [
+ "anyhow",
+ "doctown",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zip",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
