@@ -6,10 +6,9 @@
 
 use anyhow::{Context, Result};
 use axum::{
-    Router,
+    Json, Router,
     extract::State,
     routing::{get, post},
-    Json,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -46,8 +45,7 @@ pub async fn serve_sse(config: SseConfig) -> Result<()> {
 
     // Create a single global MCP server instance
     let mcp_server = Arc::new(Mutex::new(
-        McpServer::new(config.docpack_path.clone())
-            .context("Failed to create MCP server")?,
+        McpServer::new(config.docpack_path.clone()).context("Failed to create MCP server")?,
     ));
 
     let app = Router::new()
@@ -72,9 +70,7 @@ pub async fn serve_sse(config: SseConfig) -> Result<()> {
         .await
         .context(format!("Failed to bind to {}", addr))?;
 
-    axum::serve(listener, app)
-        .await
-        .context("Server error")?;
+    axum::serve(listener, app).await.context("Server error")?;
 
     Ok(())
 }

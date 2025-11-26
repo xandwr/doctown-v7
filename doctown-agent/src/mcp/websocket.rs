@@ -117,7 +117,10 @@ async fn handle_connection(
                 // Parse JSON-RPC request
                 let response = match serde_json::from_str::<JsonRpcRequest>(&text) {
                     Ok(request) => {
-                        eprintln!("Parsed request: method={}, id={:?}", request.method, request.id);
+                        eprintln!(
+                            "Parsed request: method={}, id={:?}",
+                            request.method, request.id
+                        );
                         // Handle the request using the MCP server
                         let mut server = mcp_server.lock().await;
                         handle_request(&mut server, request)
