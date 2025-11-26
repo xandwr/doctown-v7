@@ -6,7 +6,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use zip::ZipArchive;
@@ -191,8 +190,8 @@ impl McpServer {
         Ok(())
     }
 
-    /// Handle a JSON-RPC request
-    fn handle_request(&mut self, request: JsonRpcRequest) -> JsonRpcResponse {
+    /// Handle a JSON-RPC request (public for WebSocket wrapper)
+    pub fn handle_request(&mut self, request: JsonRpcRequest) -> JsonRpcResponse {
         let result = match request.method.as_str() {
             "initialize" => self.handle_initialize(request.params),
             "tools/list" => self.handle_list_tools(),

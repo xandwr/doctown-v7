@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "doctown-local": {
+      "command": "doctown-agent",
+      "args": ["/path/to/your/project.docpack"],
+      "description": "Local doctown MCP server via stdio"
+    },
+    "doctown-remote": {
+      "url": "ws://localhost:8765",
+      "description": "Remote doctown MCP server via WebSocket (local)"
+    },
+    "doctown-runpod": {
+      "url": "ws://your-runpod-ip:8765",
+      "description": "Remote doctown MCP server on RunPod"
+    },
+    "doctown-tls": {
+      "url": "wss://your-subdomain.runpod.cloud/mcp",
+      "description": "Remote doctown MCP server with TLS"
+    }
+  }
+}

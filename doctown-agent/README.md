@@ -16,8 +16,10 @@ doctown-agent/
     subsystems.rs        # Community/module queries
     tasks.rs             # Task-oriented views
     editor.rs            # File & chunk reading
+    write.rs             # Code modification operations
   mcp/
     server.rs            # JSON-RPC routing over stdio
+    websocket.rs         # WebSocket server (port 8765)
   manifest.json          # Tool definitions for clients
 ```
 
@@ -49,17 +51,35 @@ The MCP server exposes the following capabilities:
 
 ### Running the Server
 
+The agent supports two modes: **stdio** (for local agents) and **WebSocket** (for remote access).
+
+#### Stdio Mode (Default)
+
 ```bash
 # Build the agent
 cargo build --release -p doctown-agent
 
-# Run the MCP server
+# Run the MCP server (stdio mode)
 ./target/release/doctown-agent path/to/your.docpack
 ```
 
 The server communicates over stdin/stdout using JSON-RPC 2.0.
 
+#### WebSocket Mode
+
+```bash
+# Run on default port 8765
+./target/release/doctown-agent path/to/your.docpack --websocket
+
+# Run on custom port
+./target/release/doctown-agent path/to/your.docpack -w -p 9000
+```
+
+See [WEBSOCKET.md](./WEBSOCKET.md) for detailed WebSocket deployment guide, including RunPod setup.
+
 ### Example MCP Client Configuration
+
+#### Local Agent (Stdio)
 
 For Claude Desktop or other MCP clients, add to your config:
 
@@ -73,6 +93,32 @@ For Claude Desktop or other MCP clients, add to your config:
   }
 }
 ```
+
+#### Remote Agent (WebSocket)
+
+```json
+{
+  "mcpServers": {
+    "doctown": {
+      "url": "ws://localhost:8765"
+    }
+  }
+}
+```
+
+For production deployments on RunPod or cloud platforms:
+
+```json
+{
+  "mcpServers": {
+    "doctown": {
+      "url": "ws://your-runpod-ip:8765"
+    }
+  }
+}
+```
+
+See [examples/mcp-client-config.json](./examples/mcp-client-config.json) for more examples.
 
 ### Example Tool Calls
 

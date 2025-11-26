@@ -4,4 +4,4 @@ pub mod api;
 pub mod mcp;
 
 pub use api::*;
-pub use mcp::McpServer;
+pub use mcp::{DEFAULT_MCP_PORT, McpServer, WebSocketConfig, serve_websocket};
