@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 anyhow = "1.0.100"
+ort = { version = "2.0.0-rc.10", features = ["load-dynamic"] }
 reqwest = "0.12.24"
 tokio = { version = "1.48.0", features = ["full"] }
 tree-sitter = "0.25.10"
@@ -15,3 +16,5 @@ tree-sitter-html = "0.23.2"
 tree-sitter-rust = "0.24.0"
 url = "2.5.7"
 zip = "6.0.0"
+ndarray = "0.17.1"
+tokenizers = "0.22.1"

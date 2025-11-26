@@ -1,8 +1,9 @@
 // main.rs
 
+mod embedding;
 mod ingest;
 use anyhow::Result;
-use ingest::{FileKind, code_file_stats, load_zip, unzip_to_memory};
+use ingest::{code_file_stats, load_zip, unzip_to_memory};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,7 +18,14 @@ async fn main() -> Result<()> {
 
     // 1: Ingest
     let zip_bytes = load_zip(source).await?;
-    let processed = unzip_to_memory(&zip_bytes).await?;
+
+    // To enable embeddings, create an EmbeddingEngine:
+    use embedding::EmbeddingEngine;
+    let mut engine = EmbeddingEngine::new(
+        "models/minilm-l6/model.onnx",
+        "models/minilm-l6/tokenizer.json",
+    )?;
+    let processed = unzip_to_memory(&zip_bytes, Some(&mut engine)).await?;
 
     println!("Processed {} files:", processed.len());
     for pf in &processed {
@@ -121,7 +129,7 @@ async fn main() -> Result<()> {
         // Print explicit chunk-symbol relationships for code files
         if !pf.chunks.is_empty() && !pf.symbols.is_empty() && filetype == "rs" {
             println!("\n   🔗 CHUNK-SYMBOL RELATIONSHIPS:");
-            
+
             // Show chunks and their contained symbols
             for chunk in pf.chunks.iter().take(5) {
                 let chunk_name = &chunk.id.0;
@@ -129,7 +137,10 @@ async fn main() -> Result<()> {
                 if chunk.containing_symbols.is_empty() {
                     println!("        └─ (no symbols in this chunk)");
                 } else {
-                    println!("        └─ contains {} symbol(s):", chunk.containing_symbols.len());
+                    println!(
+                        "        └─ contains {} symbol(s):",
+                        chunk.containing_symbols.len()
+                    );
                     for (i, sym_name) in chunk.containing_symbols.iter().enumerate() {
                         if i < 5 {
                             // Find symbol details
@@ -139,7 +150,10 @@ async fn main() -> Result<()> {
                         }
                     }
                     if chunk.containing_symbols.len() > 5 {
-                        println!("           ... and {} more", chunk.containing_symbols.len() - 5);
+                        println!(
+                            "           ... and {} more",
+                            chunk.containing_symbols.len() - 5
+                        );
                     }
                 }
             }

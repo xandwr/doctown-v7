@@ -80,6 +80,8 @@ use tokio::fs;
 use url::Url;
 use zip::ZipArchive;
 
+use crate::embedding::EmbeddingEngine;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IngestResult {
@@ -468,7 +470,11 @@ impl ProcessedFile {
 }
 
 /// Orchestrator: execute a ProcessingPlan on a `FileNode`.
-pub async fn process_file(node: &FileNode, plan: &ProcessingPlan) -> ProcessedFile {
+pub async fn process_file(
+    node: &FileNode,
+    plan: &ProcessingPlan,
+    engine: Option<&mut EmbeddingEngine>,
+) -> ProcessedFile {
     if plan.get_skip() {
         return ProcessedFile::empty(node);
     }
@@ -488,7 +494,11 @@ pub async fn process_file(node: &FileNode, plan: &ProcessingPlan) -> ProcessedFi
 
     // 4) embeddings (optional, async to support remote embedders)
     let embeddings = if plan.get_embed() {
-        embed_chunks(&chunks).await
+        if let Some(eng) = engine {
+            embed_chunks(&chunks, eng).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        }
     } else {
         Vec::new()
     };
@@ -1679,10 +1689,13 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
     symbols
 }
 
-/// Embed chunks. Placeholder that returns zero-length vectors.
-async fn embed_chunks(_chunks: &Vec<Chunk>) -> Vec<Embedding> {
-    // In production this would call an async embedding service.
-    Vec::new()
+/// Embed chunks using the EmbeddingEngine.
+pub async fn embed_chunks(
+    chunks: &Vec<Chunk>,
+    engine: &mut EmbeddingEngine,
+) -> Result<Vec<Embedding>> {
+    let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+    engine.embed_batch(&texts)
 }
 
 /// Assemble nodes and establish explicit chunk-symbol relationships based on byte ranges.
@@ -2117,7 +2130,10 @@ pub mod utils {
 // Use the async `unzip_to_memory` below which returns processed files.
 
 /// Async helper: unzip the archive and run the processing executor on each file.
-pub async fn unzip_to_memory(zip_bytes: &[u8]) -> Result<Vec<ProcessedFile>> {
+pub async fn unzip_to_memory(
+    zip_bytes: &[u8],
+    mut engine: Option<&mut EmbeddingEngine>,
+) -> Result<Vec<ProcessedFile>> {
     let cursor = Cursor::new(zip_bytes.to_vec());
     let mut archive = ZipArchive::new(cursor)?;
     let mut processed = Vec::new();
@@ -2147,7 +2163,7 @@ pub async fn unzip_to_memory(zip_bytes: &[u8]) -> Result<Vec<ProcessedFile>> {
 
         let node = FileNode { path, bytes, kind };
         let plan = plan_for_file_node(&node);
-        let pf = process_file(&node, &plan).await;
+        let pf = process_file(&node, &plan, engine.as_deref_mut()).await;
         processed.push(pf);
     }
 
