@@ -2,7 +2,7 @@
 
 mod ingest;
 use anyhow::Result;
-use ingest::load_zip;
+use ingest::{load_zip, unzip_to_memory};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,8 +17,12 @@ async fn main() -> Result<()> {
 
     // 1: Ingest
     let zip_bytes = load_zip(source).await?;
+    let files = unzip_to_memory(&zip_bytes)?;
 
-    println!("{}:\t\t{:?}", source, &zip_bytes[zip_bytes.len().saturating_sub(10)..]);
+    println!("Loaded {} files:", files.len());
+    for f in &files {
+        println!(" - {} ({} bytes) [{:?}]", f.path, f.bytes.len(), f.kind);
+    }
 
     // Pass bytes into the pipeline later
     // ingest::run(zip_bytes).await?;
