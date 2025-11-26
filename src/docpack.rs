@@ -7,6 +7,7 @@ use zip::write::{FileOptions, ZipWriter};
 use zip::CompressionMethod;
 
 use crate::ingest::{GraphEdgeKind, ProcessedFile, SymbolNode};
+use crate::docgen::DocGenerator;
 
 /// Manifest metadata for the .docpack file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,12 +83,75 @@ pub struct SymbolSummary {
     pub related: Vec<String>,
 }
 
-/// Documentation file structure
+/// Documentation file structure (enhanced with comprehensive docs)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentationFile {
     pub summaries: Vec<SymbolSummary>,
     pub architecture_overview: String,
     pub highlights: Vec<String>,
+    // Enhanced documentation from docgen
+    pub module_summaries: Vec<ModuleSummaryData>,
+    pub file_summaries: Vec<FileSummaryData>,
+    pub struct_docs: Vec<StructDocData>,
+    pub function_docs: Vec<FunctionDocData>,
+    pub dependency_overview: DependencyOverviewData,
+    pub cluster_summaries: Vec<ClusterSummaryData>,
+}
+
+// Serializable versions of docgen structures
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleSummaryData {
+    pub module_path: String,
+    pub description: String,
+    pub file_count: usize,
+    pub symbol_count: usize,
+    pub lines_of_code: usize,
+    pub primary_purpose: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSummaryData {
+    pub file_path: String,
+    pub description: String,
+    pub language: String,
+    pub lines_total: usize,
+    pub lines_code: usize,
+    pub complexity_score: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructDocData {
+    pub name: String,
+    pub file_path: String,
+    pub description: String,
+    pub visibility: String,
+    pub field_count: usize,
+    pub method_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionDocData {
+    pub name: String,
+    pub file_path: String,
+    pub description: String,
+    pub signature: String,
+    pub complexity_estimate: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencyOverviewData {
+    pub internal_count: usize,
+    pub external_count: usize,
+    pub circular_count: usize,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterSummaryData {
+    pub cluster_id: String,
+    pub topic_label: String,
+    pub description: String,
+    pub symbol_count: usize,
 }
 
 /// Main builder for creating .docpack files
@@ -130,6 +194,17 @@ impl DocpackBuilder {
                 summaries: Vec::new(),
                 architecture_overview: String::new(),
                 highlights: Vec::new(),
+                module_summaries: Vec::new(),
+                file_summaries: Vec::new(),
+                struct_docs: Vec::new(),
+                function_docs: Vec::new(),
+                dependency_overview: DependencyOverviewData {
+                    internal_count: 0,
+                    external_count: 0,
+                    circular_count: 0,
+                    summary: String::new(),
+                },
+                cluster_summaries: Vec::new(),
             },
         }
     }
@@ -265,6 +340,16 @@ impl DocpackBuilder {
         let n_chunks = self.embeddings.len();
 
         if n_chunks > 0 {
+            println!("⚡ Computing semantic similarities for {} chunks...", n_chunks);
+
+            // Build a chunk_id -> index map for fast lookups
+            use std::collections::HashMap;
+            let chunk_id_to_idx: HashMap<String, usize> = self.chunks
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c.chunk_id.clone(), i))
+                .collect();
+
             // 1) Build chunk → chunk similarity edges (top-k neighbors)
             let top_k = 5usize.min(n_chunks.saturating_sub(1));
             let sim_threshold = 0.70_f32; // only add edges above this similarity
@@ -273,10 +358,7 @@ impl DocpackBuilder {
                 // Collect similarities to other chunks
                 let mut neigh: Vec<(usize, f32)> = Vec::new();
                 let a = self.embeddings[i].as_ref();
-                for j in 0..n_chunks {
-                    if i == j {
-                        continue;
-                    }
+                for j in (i+1)..n_chunks {  // Only compute upper triangle, add both directions
                     let b = self.embeddings[j].as_ref();
                     let score = Self::cosine(a, b);
                     if score >= sim_threshold {
@@ -287,7 +369,7 @@ impl DocpackBuilder {
                 neigh.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
                 neigh.truncate(top_k);
 
-                // Add edges
+                // Add edges (bidirectional)
                 for (j, score) in neigh {
                     self.graph.edges.push(GraphEdgeEntry {
                         from: self.chunks[i].chunk_id.clone(),
@@ -298,8 +380,8 @@ impl DocpackBuilder {
                 }
             }
 
+            println!("⚡ Computing symbol embeddings...");
             // 2) Compute symbol embeddings as mean of their chunk embeddings
-            use std::collections::HashMap;
             let mut symbol_embeddings: HashMap<String, Vec<f32>> = HashMap::new();
             let mut symbol_chunk_counts: HashMap<String, usize> = HashMap::new();
 
@@ -311,15 +393,18 @@ impl DocpackBuilder {
                     let mut agg: Vec<f32> = Vec::new();
                     let mut count = 0usize;
                     for cid in &symbol.chunk_ids {
-                        if let Some(pos) = self.chunks.iter().position(|c| &c.chunk_id == cid) {
-                            let emb = self.embeddings[pos].as_ref();
-                            if agg.is_empty() {
-                                agg.resize(emb.len(), 0.0);
+                        // Use hash map lookup instead of linear search
+                        if let Some(&pos) = chunk_id_to_idx.get(cid) {
+                            if pos < self.embeddings.len() {
+                                let emb = self.embeddings[pos].as_ref();
+                                if agg.is_empty() {
+                                    agg.resize(emb.len(), 0.0);
+                                }
+                                for (k, &v) in emb.iter().enumerate() {
+                                    agg[k] += v;
+                                }
+                                count += 1;
                             }
-                            for (k, &v) in emb.iter().enumerate() {
-                                agg[k] += v;
-                            }
-                            count += 1;
                         }
                     }
                     if count > 0 {
@@ -334,48 +419,57 @@ impl DocpackBuilder {
                 }
             }
 
-            // 3) Symbol → Symbol similarity (top-3)
+            println!("⚡ Computing symbol-to-symbol similarities...");
+            // 3) Symbol → Symbol similarity (top-3) - skip if too many symbols
             let symbol_ids: Vec<String> = symbol_embeddings.keys().cloned().collect();
-            for (idx, sid) in symbol_ids.iter().enumerate() {
-                let a = &symbol_embeddings[sid];
-                let mut neigh: Vec<(String, f32)> = Vec::new();
-                for (jdx, sj) in symbol_ids.iter().enumerate() {
-                    if idx == jdx {
-                        continue;
+            let n_symbols = symbol_ids.len();
+
+            if n_symbols <= 500 {  // Only compute if reasonable number
+                for (idx, sid) in symbol_ids.iter().enumerate() {
+                    let a = &symbol_embeddings[sid];
+                    let mut neigh: Vec<(String, f32)> = Vec::new();
+                    for (jdx, sj) in symbol_ids.iter().enumerate().skip(idx + 1) {
+                        let b = &symbol_embeddings[sj];
+                        let score = Self::cosine(a.as_slice(), b.as_slice());
+                        neigh.push((sj.clone(), score));
                     }
-                    let b = &symbol_embeddings[sj];
-                    let score = Self::cosine(a.as_slice(), b.as_slice());
-                    neigh.push((sj.clone(), score));
+                    neigh.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
+                    neigh.truncate(3);
+                    for (other_id, score) in neigh {
+                        self.graph.edges.push(GraphEdgeEntry {
+                            from: sid.clone(),
+                            to: other_id,
+                            edge_type: "semantic_symbol_similarity".to_string(),
+                            score: Some(score),
+                        });
+                    }
                 }
-                neigh.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
-                neigh.truncate(3);
-                for (other_id, score) in neigh {
-                    self.graph.edges.push(GraphEdgeEntry {
-                        from: sid.clone(),
-                        to: other_id,
-                        edge_type: "semantic_symbol_similarity".to_string(),
-                        score: Some(score),
-                    });
-                }
+            } else {
+                println!("⚠️  Skipping symbol-to-symbol similarity (too many symbols: {})", n_symbols);
             }
 
-            // 4) Symbol → Chunk top-3 links (by cosine)
-            for (sid, emb) in &symbol_embeddings {
-                let mut neigh: Vec<(String, f32)> = Vec::new();
-                for (i, chunk) in self.chunks.iter().enumerate() {
-                    let score = Self::cosine(emb.as_slice(), self.embeddings[i].as_ref());
-                    neigh.push((chunk.chunk_id.clone(), score));
+            println!("⚡ Computing symbol-to-chunk links...");
+            // 4) Symbol → Chunk top-3 links (by cosine) - skip if product is too large
+            if n_symbols * n_chunks <= 50000 {  // Only compute if reasonable
+                for (sid, emb) in &symbol_embeddings {
+                    let mut neigh: Vec<(String, f32)> = Vec::new();
+                    for i in 0..n_chunks {
+                        let score = Self::cosine(emb.as_slice(), self.embeddings[i].as_ref());
+                        neigh.push((self.chunks[i].chunk_id.clone(), score));
+                    }
+                    neigh.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
+                    neigh.truncate(3);
+                    for (cid, score) in neigh {
+                        self.graph.edges.push(GraphEdgeEntry {
+                            from: sid.clone(),
+                            to: cid,
+                            edge_type: "semantic_symbol_to_chunk".to_string(),
+                            score: Some(score),
+                        });
+                    }
                 }
-                neigh.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
-                neigh.truncate(3);
-                for (cid, score) in neigh {
-                    self.graph.edges.push(GraphEdgeEntry {
-                        from: sid.clone(),
-                        to: cid,
-                        edge_type: "semantic_symbol_to_chunk".to_string(),
-                        score: Some(score),
-                    });
-                }
+            } else {
+                println!("⚠️  Skipping symbol-to-chunk links (too large: {} symbols × {} chunks)", n_symbols, n_chunks);
             }
 
             // 5) Clustering (DBSCAN) on chunk embeddings
@@ -398,6 +492,7 @@ impl DocpackBuilder {
                 }
             }
 
+            println!("⚡ Propagating cluster assignments to symbols...");
             // propagate cluster membership to symbols (majority of their chunks, ignoring noise)
             for pf in processed_files {
                 for symbol in &pf.symbols {
@@ -407,10 +502,13 @@ impl DocpackBuilder {
                     let mut counts: HashMap<usize, usize> = HashMap::new();
                     let mut total = 0usize;
                     for cid in &symbol.chunk_ids {
-                        if let Some(pos) = self.chunks.iter().position(|c| &c.chunk_id == cid) {
-                            if let Some(cl) = assignments[pos] {
-                                *counts.entry(cl).or_default() += 1;
-                                total += 1;
+                        // Use hash map lookup instead of linear search
+                        if let Some(&pos) = chunk_id_to_idx.get(cid) {
+                            if pos < assignments.len() {
+                                if let Some(cl) = assignments[pos] {
+                                    *counts.entry(cl).or_default() += 1;
+                                    total += 1;
+                                }
                             }
                         }
                     }
@@ -438,9 +536,95 @@ impl DocpackBuilder {
     }
 
     fn generate_documentation(&mut self, processed_files: &[ProcessedFile]) {
-        // Rule-based documentation generation (no LLM)
+        // Use comprehensive docgen module for documentation generation
+        println!("🔍 Generating comprehensive documentation from graph...");
         
-        // Generate per-symbol summaries
+        let docgen = DocGenerator::new(processed_files);
+        let generated_docs = docgen.generate_all();
+        
+        // Convert generated docs to serializable format
+        self.documentation.module_summaries = generated_docs.module_summaries.iter().map(|m| {
+            ModuleSummaryData {
+                module_path: m.module_path.clone(),
+                description: m.description.clone(),
+                file_count: m.file_count,
+                symbol_count: m.symbol_count,
+                lines_of_code: m.lines_of_code,
+                primary_purpose: m.primary_purpose.clone(),
+            }
+        }).collect();
+        
+        self.documentation.file_summaries = generated_docs.file_summaries.iter().map(|f| {
+            FileSummaryData {
+                file_path: f.file_path.clone(),
+                description: f.description.clone(),
+                language: f.language.clone(),
+                lines_total: f.lines_total,
+                lines_code: f.lines_code,
+                complexity_score: f.complexity_score,
+            }
+        }).collect();
+        
+        self.documentation.struct_docs = generated_docs.struct_docs.iter().map(|s| {
+            StructDocData {
+                name: s.name.clone(),
+                file_path: s.file_path.clone(),
+                description: s.description.clone(),
+                visibility: s.visibility.clone(),
+                field_count: s.fields.len(),
+                method_count: s.methods.len(),
+            }
+        }).collect();
+        
+        self.documentation.function_docs = generated_docs.function_docs.iter().map(|f| {
+            FunctionDocData {
+                name: f.name.clone(),
+                file_path: f.file_path.clone(),
+                description: f.description.clone(),
+                signature: f.signature.clone(),
+                complexity_estimate: f.complexity_estimate.clone(),
+            }
+        }).collect();
+        
+        self.documentation.dependency_overview = DependencyOverviewData {
+            internal_count: generated_docs.dependency_overview.internal_dependencies.len(),
+            external_count: generated_docs.dependency_overview.external_dependencies.len(),
+            circular_count: generated_docs.dependency_overview.circular_dependencies.len(),
+            summary: generated_docs.dependency_overview.dependency_graph_summary.clone(),
+        };
+        
+        self.documentation.cluster_summaries = generated_docs.cluster_summaries.iter().map(|c| {
+            ClusterSummaryData {
+                cluster_id: c.cluster_id.clone(),
+                topic_label: c.topic_label.clone(),
+                description: c.description.clone(),
+                symbol_count: c.symbol_count,
+            }
+        }).collect();
+        
+        // Generate architecture overview from comprehensive data
+        let arch = &generated_docs.architecture_overview;
+        self.documentation.architecture_overview = format!(
+            "Architecture Style: {}\n\nTotal Files: {}\nTotal Symbols: {}\nTotal Lines: {}\n\nLanguages: {:?}\n\nCore Components: {}\n\nDesign Patterns: {}\n\nModule Hierarchy: {}",
+            arch.architectural_style,
+            arch.total_files,
+            arch.total_symbols,
+            arch.total_lines,
+            arch.language_breakdown,
+            arch.core_components.len(),
+            arch.design_patterns.join(", "),
+            arch.module_hierarchy
+        );
+        
+        // Generate highlights
+        self.documentation.highlights.push(format!("📁 {} modules analyzed", self.documentation.module_summaries.len()));
+        self.documentation.highlights.push(format!("📄 {} files documented", self.documentation.file_summaries.len()));
+        self.documentation.highlights.push(format!("🏗️  {} structs documented", self.documentation.struct_docs.len()));
+        self.documentation.highlights.push(format!("⚙️  {} functions documented", self.documentation.function_docs.len()));
+        self.documentation.highlights.push(format!("🔗 {} internal dependencies", self.documentation.dependency_overview.internal_count));
+        self.documentation.highlights.push(format!("📊 {} semantic clusters identified", self.documentation.cluster_summaries.len()));
+        
+        // Keep legacy symbol summaries for compatibility
         for pf in processed_files {
             for symbol in &pf.symbols {
                 let summary = self.generate_symbol_summary(symbol);
@@ -449,28 +633,17 @@ impl DocpackBuilder {
                     symbol_id: format!("symbol:{}:{}", pf.file_node.path, symbol.name),
                     summary,
                     details: symbol.docs.clone().unwrap_or_default(),
-                    related: Vec::new(), // TODO: compute related symbols
+                    related: Vec::new(),
                 });
             }
         }
-
-        // Generate architecture overview
-        self.documentation.architecture_overview = format!(
-            "Project contains {} files with {} symbols and {} chunks.",
-            processed_files.len(),
-            processed_files.iter().map(|pf| pf.symbols.len()).sum::<usize>(),
-            self.chunks.len()
-        );
-
-        // Generate highlights
-        self.documentation.highlights.push(format!(
-            "Total files: {}",
-            processed_files.len()
-        ));
-        self.documentation.highlights.push(format!(
-            "Total chunks: {}",
-            self.chunks.len()
-        ));
+        
+        println!("✅ Generated comprehensive documentation:");
+        println!("   - {} module summaries", self.documentation.module_summaries.len());
+        println!("   - {} file summaries", self.documentation.file_summaries.len());
+        println!("   - {} struct docs", self.documentation.struct_docs.len());
+        println!("   - {} function docs", self.documentation.function_docs.len());
+        println!("   - {} cluster summaries", self.documentation.cluster_summaries.len());
     }
 
     fn generate_symbol_summary(&self, symbol: &SymbolNode) -> String {

@@ -1,5 +1,6 @@
 // main.rs
 
+mod docgen;
 mod docpack;
 mod embedding;
 mod ingest;
