@@ -2526,7 +2526,23 @@ impl ProjectGraph {
             symbol_names.dedup();
 
             let cohesion = SemanticCommunity::compute_cohesion(indices, &self.chunk_embeddings);
-            let suggested_label = SemanticCommunity::infer_label(&symbol_names);
+            // Prepare chunk id / symbol lists aligned with `chunk_embeddings`
+            let chunk_ids: Vec<String> = self.chunks.iter().map(|c| c.id.0.clone()).collect();
+            let chunk_symbol_lists: Vec<Vec<String>> = self
+                .chunks
+                .iter()
+                .map(|c| c.containing_symbols.clone())
+                .collect();
+            let chunk_texts: Vec<String> = self.chunks.iter().map(|c| c.text.clone()).collect();
+
+            let suggested_label = SemanticCommunity::infer_label_with_embeddings(
+                indices,
+                &self.chunk_embeddings,
+                &chunk_ids,
+                &chunk_symbol_lists,
+                &chunk_texts,
+                &symbol_names,
+            );
 
             self.communities.push(DetectedCommunity {
                 id: *comm_id,

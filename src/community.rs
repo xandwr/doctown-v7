@@ -4,6 +4,7 @@
 // This is the open-source equivalent of Sourcegraph's paid module-grouping features.
 
 use std::collections::{HashMap, HashSet};
+use crate::nlp;
 
 /// A weighted, undirected edge for the similarity graph.
 #[derive(Debug, Clone)]
@@ -11,6 +12,66 @@ pub struct SimilarityEdge {
     pub src: usize,
     pub dst: usize,
     pub weight: f32,
+}
+
+// Simple tokenization helpers and heuristics
+const STOPWORDS: [&str; 17] = [
+    "the", "and", "for", "with", "from", "into", "using", "use",
+    "you", "your", "need", "what", "full", "look", "file", "try", "convert"
+];
+const VERB_BLACKLIST: [&str; 20] = [
+    "get", "set", "new", "parse", "handle", "list", "build", "compute", "create", "write",
+    "read", "load", "init", "process", "run", "generate", "add", "remove", "fetch", "call",
+];
+
+/// Check if a token is valid for label generation
+/// Filters out: too short, stopwords, verbs, purely numeric, mostly numeric
+fn is_valid_token(tok: &str) -> bool {
+    if tok.len() < 3 { return false; }
+    let lower = tok.to_lowercase();
+    if STOPWORDS.contains(&lower.as_str()) || VERB_BLACKLIST.contains(&lower.as_str()) {
+        return false;
+    }
+    // Filter tokens that are purely numeric or mostly numeric
+    let digit_count = tok.chars().filter(|c| c.is_numeric()).count();
+    let alpha_count = tok.chars().filter(|c| c.is_alphabetic()).count();
+    // Reject if no letters, or if more than 50% digits
+    alpha_count > 0 && digit_count <= alpha_count
+}
+
+fn split_to_tokens(s: &str) -> Vec<String> {
+    // Break on non-alphanumeric and split camelCase / snake_case
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            // Split camelCase boundary
+            if c.is_uppercase() && !cur.is_empty() && cur.chars().last().unwrap().is_lowercase() {
+                parts.push(cur.clone());
+                cur.clear();
+            }
+            cur.push(c);
+        } else {
+            if !cur.is_empty() {
+                parts.push(cur.clone());
+                cur.clear();
+            }
+        }
+    }
+    if !cur.is_empty() {
+        parts.push(cur);
+    }
+
+    // Further split parts by underscores or double-colon
+    let mut tokens = Vec::new();
+    for p in parts {
+        for q in p.split(|c: char| c == '_' || c == ':') {
+            if !q.is_empty() {
+                tokens.push(q.to_string());
+            }
+        }
+    }
+    tokens
 }
 
 /// Result of community detection: mapping from node index to community ID.
@@ -318,8 +379,8 @@ impl SemanticCommunity {
             // Fallback: most common word in symbol names
             let mut word_counts: HashMap<String, usize> = HashMap::new();
             for sym in symbols {
-                // Split by common delimiters
-                for word in sym.split(|c: char| c == '_' || c == ':' || c.is_uppercase()) {
+                // Split by common delimiters and camelcase breaks
+                for word in split_to_tokens(sym) {
                     let word = word.to_lowercase();
                     if word.len() >= 3 {
                         *word_counts.entry(word).or_default() += 1;
@@ -333,6 +394,219 @@ impl SemanticCommunity {
                 .filter(|(_, count)| *count >= 2)
                 .map(|(word, _)| word)
         }
+    }
+
+    /// Infer a descriptive label for a community using embeddings.
+    ///
+    /// Steps:
+    /// - compute centroid of community chunk embeddings
+    /// - find top-k nearest chunks (by cosine similarity)
+    /// - extract tokens from those chunks' ids and containing symbol names
+    /// - score tokens (frequency + heuristics) and return top token(s)
+    pub fn infer_label_with_embeddings(
+        indices: &[usize],
+        embeddings: &[std::sync::Arc<[f32]>],
+        chunk_ids: &[String],
+        chunk_symbol_lists: &[Vec<String>],
+        chunk_texts: &[String],
+        symbol_names: &[String],
+    ) -> Option<String> {
+        if embeddings.is_empty() {
+            return SemanticCommunity::infer_label(symbol_names);
+        }
+
+        // Compute centroid embedding for the community indices
+        let dim = embeddings[0].len();
+        let mut centroid = vec![0.0f32; dim];
+        let mut count = 0usize;
+        for &i in indices {
+            if i < embeddings.len() {
+                for (d, v) in centroid.iter_mut().zip(embeddings[i].iter()) {
+                    *d += *v;
+                }
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return SemanticCommunity::infer_label(symbol_names);
+        }
+        for d in centroid.iter_mut() {
+            *d /= count as f32;
+        }
+
+        // Compute centrality (sum similarity to other cluster members) and pick top-5 central chunks.
+        let mut centrality: Vec<(usize, f32)> = Vec::new();
+        for &i in indices {
+            if i >= embeddings.len() { continue; }
+            let mut sum = 0.0f32;
+            for &j in indices {
+                if j >= embeddings.len() || i == j { continue; }
+                sum += cosine_similarity(&embeddings[i], &embeddings[j]);
+            }
+            centrality.push((i, sum));
+        }
+        centrality.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let top_k = centrality.iter().take(5).map(|(i, _)| *i).collect::<Vec<usize>>();
+
+        // Build a corpus of candidate phrases per chunk using comment/docs text + identifiers/symbols.
+        fn extract_comment_text(text: &str) -> String {
+            let mut out = Vec::new();
+            let mut in_block = false;
+            for line in text.lines() {
+                let t = line.trim_start();
+                if t.starts_with("///") || t.starts_with("//") || t.starts_with('#') {
+                    out.push(t.trim_start_matches('/').trim_start_matches('#').trim().to_string());
+                } else if t.starts_with("/*") {
+                    in_block = true;
+                    out.push(t.trim_start_matches("/*").trim().to_string());
+                } else if in_block {
+                    if t.ends_with("*/") {
+                        in_block = false;
+                        out.push(t.trim_end_matches("*/").trim().to_string());
+                    } else {
+                        out.push(t.to_string());
+                    }
+                }
+            }
+            out.join(" ")
+        }
+
+        let mut doc_phrases: Vec<Vec<String>> = Vec::with_capacity(chunk_texts.len());
+        for ci in 0..chunk_texts.len() {
+            let mut phrases: Vec<String> = Vec::new();
+                if let Some(text) = chunk_texts.get(ci) {
+                let comments = extract_comment_text(text);
+                    // Extract noun phrases from COMMENTS ONLY, not raw chunk text
+                    // This avoids picking up prose like "You Need" or "What You" from markdown
+                    if !comments.is_empty() {
+                        for np in nlp::extract_noun_phrases(&comments) {
+                            let p = np.to_lowercase();
+                            if p.len() >= 3 { phrases.push(p); }
+                        }
+                    }
+                // tokenize comment words
+                for word in comments.split(|c: char| !c.is_alphanumeric() && c != '_' && c != ':') {
+                    if word.is_empty() { continue; }
+                    for tok in split_to_tokens(word) {
+                        if is_valid_token(&tok) {
+                            phrases.push(tok.to_lowercase());
+                        }
+                    }
+                }
+                // also add identifiers found in chunk id as candidates
+                if let Some(cid) = chunk_ids.get(ci) {
+                    for tok in split_to_tokens(cid) {
+                        if is_valid_token(&tok) {
+                            phrases.push(tok.to_lowercase());
+                        }
+                    }
+                }
+                // include symbol tokens for this chunk
+                if let Some(sym_list) = chunk_symbol_lists.get(ci) {
+                    for sym in sym_list {
+                        for tok in split_to_tokens(sym) {
+                            if is_valid_token(&tok) {
+                                phrases.push(tok.to_lowercase());
+                            }
+                        }
+                    }
+                }
+                // bigrams from the token stream (comments/identifiers mixed)
+                let toks: Vec<String> = phrases.clone();
+                for w in toks.windows(2) {
+                    let big = format!("{} {}", w[0], w[1]);
+                    phrases.push(big);
+                }
+            } else {
+                // fallback to ids/symbols
+                if let Some(cid) = chunk_ids.get(ci) {
+                    for tok in split_to_tokens(cid) {
+                        if is_valid_token(&tok) {
+                            phrases.push(tok.to_lowercase());
+                        }
+                    }
+                }
+                if let Some(sym_list) = chunk_symbol_lists.get(ci) {
+                    for sym in sym_list {
+                        for tok in split_to_tokens(sym) {
+                            if is_valid_token(&tok) {
+                                phrases.push(tok.to_lowercase());
+                            }
+                        }
+                    }
+                }
+            }
+            doc_phrases.push(phrases);
+        }
+
+        // Compute DF across corpus
+        let mut df: HashMap<String, usize> = HashMap::new();
+        for phrases in &doc_phrases {
+            let mut seen: HashSet<String> = HashSet::new();
+            for p in phrases {
+                if !seen.contains(p) {
+                    *df.entry(p.clone()).or_default() += 1;
+                    seen.insert(p.clone());
+                }
+            }
+        }
+        let corpus_n = doc_phrases.len() as f32;
+
+        // TF counts within top-k selected chunks
+        let mut tf: HashMap<String, f32> = HashMap::new();
+        for &ci in &top_k {
+            if let Some(phrases) = doc_phrases.get(ci) {
+                for p in phrases {
+                    *tf.entry(p.clone()).or_default() += 1.0;
+                }
+            }
+        }
+        if tf.is_empty() { return SemanticCommunity::infer_label(symbol_names); }
+
+        // TF-IDF scoring
+        let mut scored: Vec<(String, f32)> = Vec::new();
+        for (phrase, tcount) in tf.into_iter() {
+            let df_count = *df.get(&phrase).unwrap_or(&1) as f32;
+            let idf = (1.0 + corpus_n / (1.0 + df_count)).ln();
+            scored.push((phrase, tcount * idf));
+        }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Pick top 1-3 tokens (words/phrases) and title-case them
+        let mut picks: Vec<String> = Vec::new();
+        let mut seen_words: HashSet<String> = HashSet::new();
+        
+        for (p, _) in scored.iter().take(10) {  // Look at top 10 to find 3 unique
+            if p.len() < 3 { continue; }
+            // Filter out purely numeric or mostly numeric tokens
+            let digit_count = p.chars().filter(|c| c.is_numeric()).count();
+            let alpha_count = p.chars().filter(|c| c.is_alphabetic()).count();
+            // Reject if no letters, or if more than 50% digits
+            if alpha_count == 0 || (digit_count > alpha_count) { continue; }
+            
+            let nice = p.split_whitespace().map(|w| {
+                let mut chs = w.chars();
+                match chs.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chs.as_str(),
+                    None => String::new(),
+                }
+            }).collect::<Vec<_>>().join(" ");
+            
+            // Deduplicate: skip if we've already seen this exact word/phrase or its components
+            let words_in_phrase: Vec<String> = nice.to_lowercase().split_whitespace().map(|s| s.to_string()).collect();
+            let is_duplicate = words_in_phrase.iter().any(|w| seen_words.contains(w));
+            
+            if !is_duplicate {
+                for w in words_in_phrase {
+                    seen_words.insert(w);
+                }
+                picks.push(nice);
+                if picks.len() >= 3 { break; }
+            }
+        }
+        if picks.is_empty() { return SemanticCommunity::infer_label(symbol_names); }
+        if picks.len() == 1 { return Some(picks[0].clone()); }
+        Some(picks.into_iter().take(3).collect::<Vec<_>>().join(" + "))
     }
 
     /// Compute average pairwise similarity (cohesion) for a community.

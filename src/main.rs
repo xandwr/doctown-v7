@@ -1,6 +1,7 @@
 // main.rs
 
 mod community;
+mod nlp;
 mod docgen;
 mod docpack;
 mod embedding;
@@ -8,6 +9,7 @@ mod ingest;
 
 use anyhow::Result;
 use ingest::{code_file_stats, load_zip, unzip_to_memory_parallel};
+use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 use std::time::Instant;
 
@@ -218,34 +220,118 @@ async fn main() -> Result<()> {
             println!();
         }
 
-        // Show first few chunk IDs to verify granularity
+        // Show condensed semantic blocks (group consecutive chunks that share >=60% symbols)
         if pf.chunks.len() > 0 && filetype == "rs" {
-            print!("   └─ chunks: ");
-            for (i, chunk) in pf.chunks.iter().take(8).enumerate() {
-                if i > 0 {
-                    print!(", ");
-                }
-                // Extract readable name from chunk ID
-                let id = &chunk.id.0;
-                // Format: "container::method:start-end" or "item::name:start-end"
-                let readable = if let Some(double_colon_pos) = id.find("::") {
-                    // Has a parent container
-                    let after_double = &id[double_colon_pos + 2..];
-                    if let Some(single_colon_pos) = after_double.find(':') {
-                        &after_double[..single_colon_pos]
-                    } else {
-                        &id[..double_colon_pos]
-                    }
-                } else if let Some(single_colon_pos) = id.find(':') {
-                    // No parent container
-                    &id[..single_colon_pos]
-                } else {
-                    id
-                };
-                print!("{}", readable);
+            // Build symbol sets per chunk
+            let mut chunk_symbol_sets: Vec<HashSet<String>> = Vec::new();
+            for chunk in &pf.chunks {
+                let set: HashSet<String> = chunk.containing_symbols.iter().cloned().collect();
+                chunk_symbol_sets.push(set);
             }
-            if pf.chunks.len() > 8 {
-                print!(" ... (+{})", pf.chunks.len() - 8);
+
+            // Threshold for sharing (60%)
+            let threshold: f32 = 0.6;
+
+            // Greedy grouping of consecutive chunks where adjacent chunks share >=60% of the smaller chunk's symbols
+            let mut blocks: Vec<Vec<usize>> = Vec::new();
+            let mut i = 0usize;
+            while i < chunk_symbol_sets.len() {
+                let mut block = vec![i];
+                let mut j = i + 1;
+                while j < chunk_symbol_sets.len() {
+                    let a = &chunk_symbol_sets[*block.last().unwrap()];
+                    let b = &chunk_symbol_sets[j];
+
+                    let inter: HashSet<_> = a.intersection(b).collect();
+                    let min_size = usize::min(a.len(), b.len());
+
+                    let share = if min_size == 0 { 0.0 } else { inter.len() as f32 / min_size as f32 };
+
+                    if share >= threshold {
+                        block.push(j);
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                blocks.push(block);
+                i = blocks.last().unwrap().last().unwrap().saturating_add(1);
+            }
+
+            // Print narrative summary of semantic blocks
+            println!("   └─ Semantic blocks: {}", blocks.len());
+            for (bi, block) in blocks.iter().enumerate() {
+                // Representative chunk name (first chunk readable id)
+                let first_chunk = &pf.chunks[block[0]].id.0;
+                let repr_name = if let Some(pos) = first_chunk.find("::") {
+                    let after = &first_chunk[pos + 2..];
+                    if let Some(colpos) = after.find(':') {
+                        &after[..colpos]
+                    } else {
+                        &first_chunk[..pos]
+                    }
+                } else if let Some(pos) = first_chunk.find(':') {
+                    &first_chunk[..pos]
+                } else {
+                    &first_chunk
+                };
+
+                // Union of symbols in block
+                let mut union_syms: HashSet<String> = HashSet::new();
+                for &ci in block {
+                    for s in &pf.chunks[ci].containing_symbols {
+                        union_syms.insert(s.clone());
+                    }
+                }
+
+                // Representative symbols (top by frequency)
+                let mut freq: HashMap<String, usize> = HashMap::new();
+                for &ci in block {
+                    for s in &pf.chunks[ci].containing_symbols {
+                        *freq.entry(s.clone()).or_default() += 1;
+                    }
+                }
+                let mut freq_vec: Vec<_> = freq.into_iter().collect();
+                freq_vec.sort_by(|a, b| b.1.cmp(&a.1));
+                let repr_syms: Vec<String> = freq_vec.iter().take(6).map(|(s, _)| s.clone()).collect();
+
+                println!("     {}. Unit ({} chunk(s)) — repr: {}", bi + 1, block.len(), repr_name);
+                if !repr_syms.is_empty() {
+                    println!("        └─ composed of symbols: {}", repr_syms.join(", "));
+                } else if !union_syms.is_empty() {
+                    let mut u: Vec<_> = union_syms.into_iter().collect();
+                    u.truncate(6);
+                    println!("        └─ composed of symbols: {}", u.join(", "));
+                } else {
+                    println!("        └─ (no recognized symbols in this unit)");
+                }
+
+                // Symbol relationships: summarize which symbols appear in which chunks and any local symbol-to-symbol edges
+                println!("        └─ symbol relations:");
+                // Build a quick map of symbol -> chunk indices within this block
+                let mut sym_to_chunks: HashMap<String, Vec<usize>> = HashMap::new();
+                for &ci in block {
+                    for s in &pf.chunks[ci].containing_symbols {
+                        sym_to_chunks.entry(s.clone()).or_default().push(ci);
+                    }
+                }
+
+                // Show up to 8 symbols
+                let mut shown = 0usize;
+                for (sym, locations) in sym_to_chunks.iter() {
+                    if shown >= 8 { break; }
+                    shown += 1;
+                    let locs_str: Vec<String> = locations.iter().map(|idx| pf.chunks[*idx].id.0.clone()).collect();
+                    print!("           • {} — in {} chunk(s)", sym, locations.len());
+                    if !locs_str.is_empty() {
+                        print!(": {}", locs_str.into_iter().take(3).collect::<Vec<_>>().join(", "));
+                        if locations.len() > 3 { print!(" (+{} more)", locations.len() - 3); }
+                    }
+                    println!("");
+                }
+                if sym_to_chunks.len() > 8 {
+                    println!("           ... and {} more symbols", sym_to_chunks.len() - 8);
+                }
             }
             println!();
         }
@@ -320,6 +406,293 @@ async fn main() -> Result<()> {
     // Print detected communities/subsystems and refactor suggestions
     graph.print_communities();
     report.graph_built = Some(Utc::now());
+
+    // Recompute chunk -> community mapping so we can merge semantic blocks by cluster
+    // Build similarity edges and run Louvain locally to get chunk indices -> community id
+    {
+        use community::{build_similarity_edges, Louvain};
+        let n_chunks = graph.chunk_embeddings.len();
+        if n_chunks > 0 {
+            let sim_edges = build_similarity_edges(&graph.chunk_embeddings, 0.5);
+            let mut l = Louvain::new(n_chunks, &sim_edges);
+            let res = l.run();
+
+            // Map chunk id string -> global index
+            let mut chunkid_to_index: HashMap<String, usize> = HashMap::new();
+            for (idx, c) in graph.chunks.iter().enumerate() {
+                chunkid_to_index.insert(c.id.0.clone(), idx);
+            }
+
+            // Build chunk index -> community id map
+            let mut chunk_to_comm: HashMap<usize, usize> = HashMap::new();
+            for (comm_id, indices) in &res.communities {
+                for &ci in indices {
+                    chunk_to_comm.insert(ci, *comm_id);
+                }
+            }
+
+            // Now for each processed file, recompute semantic blocks and merge adjacent ones
+            println!("\n=== File-level Semantic Blocks (merged) ===");
+            for pf in &processed {
+                let file_path = &pf.file_node.path;
+                // Build symbol name -> kind map for this file
+                let mut sym_kind: HashMap<String, String> = HashMap::new();
+                for s in &pf.symbols {
+                    sym_kind.insert(s.name.clone(), s.kind.clone());
+                }
+
+                if pf.chunks.is_empty() {
+                    continue;
+                }
+
+                // chunk symbol sets and kind sets and embeddings per chunk
+                let mut chunk_symbol_sets: Vec<HashSet<String>> = Vec::new();
+                let mut chunk_kind_sets: Vec<HashSet<String>> = Vec::new();
+                for (_ci, chunk) in pf.chunks.iter().enumerate() {
+                    let mut ks: HashSet<String> = HashSet::new();
+                    for s in &chunk.containing_symbols {
+                        if let Some(k) = sym_kind.get(s) {
+                            ks.insert(k.clone());
+                        }
+                    }
+                    let sset: HashSet<String> = chunk.containing_symbols.iter().cloned().collect();
+                    chunk_symbol_sets.push(sset);
+                    chunk_kind_sets.push(ks);
+                }
+
+                // initial greedy blocks (consecutive chunks sharing >=60% of smaller chunk symbols)
+                let mut blocks: Vec<Vec<usize>> = Vec::new();
+                let mut i = 0usize;
+                while i < chunk_symbol_sets.len() {
+                    let mut block = vec![i];
+                    let mut j = i + 1;
+                    while j < chunk_symbol_sets.len() {
+                        let a = &chunk_symbol_sets[*block.last().unwrap()];
+                        let b = &chunk_symbol_sets[j];
+                        let inter: HashSet<_> = a.intersection(b).collect();
+                        let min_size = usize::min(a.len(), b.len());
+                        let share = if min_size == 0 { 0.0 } else { inter.len() as f32 / min_size as f32 };
+                        if share >= 0.6 {
+                            block.push(j);
+                            j += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    blocks.push(block);
+                    i = blocks.last().unwrap().last().unwrap().saturating_add(1);
+                }
+
+                // Helper to compute union symbol set for a block
+                let union_symbols = |block: &Vec<usize>| -> HashSet<String> {
+                    let mut u = HashSet::new();
+                    for &ci in block {
+                        for s in &pf.chunks[ci].containing_symbols {
+                            u.insert(s.clone());
+                        }
+                    }
+                    u
+                };
+
+                // Helper to compute union kind set for a block
+                let union_kinds = |block: &Vec<usize>| -> HashSet<String> {
+                    let mut u = HashSet::new();
+                    for &ci in block {
+                        for k in &chunk_kind_sets[ci] {
+                            u.insert(k.clone());
+                        }
+                    }
+                    u
+                };
+
+                // Helper to compute centroid embedding for a block (if embeddings exist)
+                let block_centroid = |block: &Vec<usize>| -> Option<Vec<f32>> {
+                    if pf.embeddings.is_empty() {
+                        return None;
+                    }
+                    let dim = pf.embeddings[0].len();
+                    let mut cent = vec![0.0f32; dim];
+                    let mut cnt = 0usize;
+                    for &ci in block {
+                        if ci < pf.embeddings.len() {
+                            for (d, v) in cent.iter_mut().zip(pf.embeddings[ci].iter()) {
+                                *d += *v;
+                            }
+                            cnt += 1;
+                        }
+                    }
+                    if cnt == 0 { return None; }
+                    for d in cent.iter_mut() { *d /= cnt as f32; }
+                    Some(cent)
+                };
+
+                // Merge adjacent blocks based on rules repeatedly until stable
+                let mut merged = true;
+                while merged {
+                    merged = false;
+                    let mut new_blocks: Vec<Vec<usize>> = Vec::new();
+                    let mut idx = 0usize;
+                    while idx < blocks.len() {
+                        if idx + 1 >= blocks.len() {
+                            new_blocks.push(blocks[idx].clone());
+                            break;
+                        }
+
+                        let left = &blocks[idx];
+                        let right = &blocks[idx + 1];
+
+                        // Condition A: belong to same cluster (if available)
+                        let mut same_cluster = false;
+                        // Get any global chunk indices for left/right blocks
+                        let mut left_global: Vec<usize> = Vec::new();
+                        let mut right_global: Vec<usize> = Vec::new();
+                        for &ci in left {
+                            if let Some(global_idx) = chunkid_to_index.get(&pf.chunks[ci].id.0) {
+                                left_global.push(*global_idx);
+                            }
+                        }
+                        for &ci in right {
+                            if let Some(global_idx) = chunkid_to_index.get(&pf.chunks[ci].id.0) {
+                                right_global.push(*global_idx);
+                            }
+                        }
+                        if !left_global.is_empty() && !right_global.is_empty() {
+                            // If any pair share same community id, treat as same cluster
+                            'outer: for &lg in &left_global {
+                                if let Some(lc) = chunk_to_comm.get(&lg) {
+                                    for &rg in &right_global {
+                                        if let Some(rc) = chunk_to_comm.get(&rg) {
+                                            if lc == rc {
+                                                same_cluster = true;
+                                                break 'outer;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Condition B: share >=50% of symbols between unions
+                        let u_left = union_symbols(left);
+                        let u_right = union_symbols(right);
+                        let inter_count = u_left.intersection(&u_right).count();
+                        let min_sz = usize::min(u_left.len(), u_right.len());
+                        let share = if min_sz == 0 { 0.0 } else { inter_count as f32 / min_sz as f32 };
+
+                        // Asymmetric thresholds depending on scope
+                        // Determine if chunks share same parent container (e.g., same function/impl)
+                        let left_first = &pf.chunks[left[0]].id.0;
+                        let right_first = &pf.chunks[right[0]].id.0;
+                        let left_parent = left_first.split("::").next().unwrap_or("");
+                        let right_parent = right_first.split("::").next().unwrap_or("");
+                        let same_parent = left_parent == right_parent && !left_parent.is_empty();
+
+                        let threshold = if same_parent {
+                            0.25 // intra-function/impl
+                        } else {
+                            // same file (we're iterating within a file) -> 0.35
+                            0.35
+                        };
+
+                        let cross_file_threshold = 0.55f32;
+
+                        // Condition: centroid similarity >= threshold depending on scope
+                        let mut centroid_sim_ok = false;
+                        if let (Some(lc), Some(rc)) = (block_centroid(left), block_centroid(right)) {
+                            let sim = community::cosine_similarity(&lc, &rc);
+                            // if chunks map to global indices in different files, use cross-file threshold
+                            let cross_file = left_global.iter().any(|lg| {
+                                right_global.iter().any(|rg| {
+                                    graph.chunk_to_file.get(lg) != graph.chunk_to_file.get(rg)
+                                })
+                            });
+                            let use_thresh = if cross_file { cross_file_threshold } else { threshold };
+                            if sim >= use_thresh {
+                                centroid_sim_ok = true;
+                            }
+                        }
+
+                        // Condition D: symbol kinds identical (primary kinds equal)
+                        let lk = union_kinds(left);
+                        let rk = union_kinds(right);
+                        let kinds_identical = !lk.is_empty() && lk == rk;
+
+                        // Structural link: any explicit chunk->chunk edge between globals
+                        let mut structural_link = false;
+                        'edgecheck: for &lg in &left_global {
+                            for &rg in &right_global {
+                                for e in &graph.edges {
+                                    if (e.src == graph.chunks[lg].id.0 && e.dst == graph.chunks[rg].id.0)
+                                        || (e.dst == graph.chunks[lg].id.0 && e.src == graph.chunks[rg].id.0)
+                                    {
+                                        if matches!(e.kind, ingest::GraphEdgeKind::ChunkToChunk | ingest::GraphEdgeKind::SymbolSimilarity) {
+                                            structural_link = true;
+                                            break 'edgecheck;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Never merge across top-level structural boundaries (mod, enum, function, struct)
+                        let forbid_merge_due_to_boundary = {
+                            let left_kind = left_first.split("::").next().unwrap_or("");
+                            let right_kind = right_first.split("::").next().unwrap_or("");
+                            let top_kinds = ["mod", "struct", "enum", "fn", "trait", "impl"];
+                            top_kinds.contains(&left_kind) && top_kinds.contains(&right_kind) && left_kind != right_kind
+                        };
+
+                        // Merge allowed only if one of the conditions true AND (>=3 shared symbols or structural link)
+                        let raw_condition = same_cluster || (share >= 0.5) || centroid_sim_ok || kinds_identical;
+                        let share_count_ok = inter_count >= 3;
+
+                        if !forbid_merge_due_to_boundary && raw_condition && (share_count_ok || structural_link) {
+                            // Merge into one block
+                            let mut merged_block = left.clone();
+                            merged_block.extend(right.iter());
+                            new_blocks.push(merged_block);
+                            idx += 2;
+                            merged = true;
+                        } else {
+                            new_blocks.push(blocks[idx].clone());
+                            idx += 1;
+                        }
+                    }
+                    blocks = new_blocks;
+                }
+
+                // Print merged blocks for this file (only if more than 0)
+                println!(" - {} ({} chunk(s))", file_path, pf.chunks.len());
+                println!("   └─ semantic units: {}", blocks.len());
+                for (bi, block) in blocks.iter().enumerate() {
+                    // representative name
+                    let first_chunk = &pf.chunks[block[0]].id.0;
+                    let repr_name = if let Some(pos) = first_chunk.find("::") {
+                        let after = &first_chunk[pos + 2..];
+                        if let Some(colpos) = after.find(':') { &after[..colpos] } else { &first_chunk[..pos] }
+                    } else if let Some(pos) = first_chunk.find(':') { &first_chunk[..pos] } else { &first_chunk };
+
+                    // representative symbols
+                    let mut freq: HashMap<String, usize> = HashMap::new();
+                    for &ci in block {
+                        for s in &pf.chunks[ci].containing_symbols {
+                            *freq.entry(s.clone()).or_default() += 1;
+                        }
+                    }
+                    let mut freq_vec: Vec<_> = freq.into_iter().collect();
+                    freq_vec.sort_by(|a, b| b.1.cmp(&a.1));
+                    let repr_syms: Vec<String> = freq_vec.iter().take(6).map(|(s, _)| s.clone()).collect();
+
+                    println!("     {}. Unit ({} chunk(s)) — repr: {}", bi + 1, block.len(), repr_name);
+                    if !repr_syms.is_empty() {
+                        println!("        └─ composed of symbols: {}", repr_syms.join(", "));
+                    } else {
+                        println!("        └─ (no recognized symbols in this unit)");
+                    }
+                }
+            }
+        }
+    }
 
     // Generate .docpack file
     println!("\n=== Generating .docpack file ===");

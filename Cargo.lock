@@ -456,6 +456,7 @@ dependencies = [
  "ndarray 0.17.1",
  "ort",
  "rayon",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
