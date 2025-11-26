@@ -154,6 +154,51 @@ pub struct ClusterSummaryData {
     pub symbol_count: usize,
 }
 
+/// Agent-optimized index for LLM navigation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentIndex {
+    pub version: String,
+    pub subsystems: Vec<Subsystem>,
+    pub symbols: HashMap<String, SymbolEntry>,
+    pub tasks: HashMap<String, Vec<String>>,
+    pub impact_graph: HashMap<String, Vec<String>>,
+    pub quickstart: AgentQuickstart,
+}
+
+/// A subsystem (community) of related code
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Subsystem {
+    pub name: String,
+    pub symbols: Vec<String>,
+    pub files: Vec<String>,
+    pub confidence: f32,
+    pub role: String,
+    pub summary: String,
+}
+
+/// Comprehensive symbol entry for agent navigation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolEntry {
+    pub kind: String,
+    pub file: String,
+    pub chunk: String, // "start_byte-end_byte" or "line_start-line_end"
+    pub subsystem: String,
+    pub signature: Option<String>,
+    pub summary: String,
+    pub related_symbols: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_index: Option<usize>, // Index into embeddings array for semantic search
+}
+
+/// Quick-start navigation hints for agents
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentQuickstart {
+    pub entry_points: Vec<String>,
+    pub core_types: Vec<String>,
+    pub most_connected: Vec<String>,
+    pub subsystem_map: HashMap<String, String>,
+}
+
 /// Main builder for creating .docpack files
 pub struct DocpackBuilder {
     manifest: Manifest,
@@ -821,7 +866,7 @@ impl DocpackBuilder {
     }
 
     /// Write the .docpack file to disk
-    pub fn write_to_file<P: AsRef<Path>>(&self, output_path: P) -> Result<()> {
+    pub fn write_to_file<P: AsRef<Path>>(&self, output_path: P, project_graph: Option<&crate::ingest::ProjectGraph>) -> Result<()> {
         let file = std::fs::File::create(output_path)?;
         let mut zip = ZipWriter::new(file);
         let options: FileOptions<()> = FileOptions::default()
@@ -852,6 +897,14 @@ impl DocpackBuilder {
         zip.start_file("documentation.json", options)?;
         let documentation_json = serde_json::to_string_pretty(&self.documentation)?;
         zip.write_all(documentation_json.as_bytes())?;
+
+        // Write agent_index.json (if project graph is available)
+        if let Some(pg) = project_graph {
+            zip.start_file("agent_index.json", options)?;
+            let agent_index = crate::agent::build_agent_index(pg);
+            let agent_index_json = serde_json::to_string_pretty(&agent_index)?;
+            zip.write_all(agent_index_json.as_bytes())?;
+        }
 
         // Write embeddings.bin (binary format: row-major f32 array)
         zip.start_file("embeddings.bin", options)?;

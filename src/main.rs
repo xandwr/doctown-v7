@@ -1,5 +1,6 @@
 // main.rs
 
+mod agent;
 mod community;
 mod nlp;
 mod docgen;
@@ -722,7 +723,7 @@ async fn main() -> Result<()> {
         "output.docpack".to_string()
     };
 
-    builder.write_to_file(&output_path)?;
+    builder.write_to_file(&output_path, Some(&graph))?;
     println!("✅ Generated: {}", output_path);
 
     report.docpack_written = Some(Utc::now());
