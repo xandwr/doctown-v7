@@ -436,6 +436,7 @@ pub enum GraphEdgeKind {
     ChunkToChunk,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GraphEdge {
     pub src: String,
@@ -1711,12 +1712,12 @@ fn assemble_nodes(
         if let Some(chunk_range) = chunk.byte_range {
             let chunk_start = chunk_range.0;
             let chunk_end = chunk_range.1;
-            
+
             for symbol in symbols.iter() {
                 if let Some(symbol_range) = symbol.byte_range {
                     let symbol_start = symbol_range.0;
                     let symbol_end = symbol_range.1;
-                    
+
                     // Check if symbol is contained within chunk
                     // (symbol starts at or after chunk start AND symbol ends at or before chunk end)
                     if symbol_start >= chunk_start && symbol_end <= chunk_end {
@@ -1732,16 +1733,16 @@ fn assemble_nodes(
         if let Some(symbol_range) = symbol.byte_range {
             let symbol_start = symbol_range.0;
             let symbol_end = symbol_range.1;
-            
+
             for chunk in chunks.iter() {
                 if let Some(chunk_range) = chunk.byte_range {
                     let chunk_start = chunk_range.0;
                     let chunk_end = chunk_range.1;
-                    
+
                     // Check if symbol is contained within chunk
                     if symbol_start >= chunk_start && symbol_end <= chunk_end {
                         symbol.chunk_ids.push(chunk.id.0.clone());
-                        
+
                         // Add Symbol -> Chunk edge
                         edges.push(GraphEdge {
                             src: symbol.name.clone(),
@@ -1794,7 +1795,12 @@ fn assemble_nodes(
         // Extract the type name from the impl block name
         let impl_name = s.name.clone();
         if impl_name.starts_with("impl ") {
-            let type_name = impl_name.trim_start_matches("impl ").split('<').next().unwrap_or("").trim();
+            let type_name = impl_name
+                .trim_start_matches("impl ")
+                .split('<')
+                .next()
+                .unwrap_or("")
+                .trim();
             if !type_name.is_empty() {
                 edges.push(GraphEdge {
                     src: type_name.to_string(),
@@ -1803,7 +1809,7 @@ fn assemble_nodes(
                 });
             }
         }
-        
+
         // If it's a trait impl, link to the trait
         if let Some(trait_impl) = &s.trait_impl {
             edges.push(GraphEdge {
@@ -2227,7 +2233,7 @@ impl ProjectGraph {
             for i in 0..file_chunks.len().saturating_sub(1) {
                 let current = &file_chunks[i];
                 let next = &file_chunks[i + 1];
-                
+
                 graph.edges.push(GraphEdge {
                     src: current.id.0.clone(),
                     dst: next.id.0.clone(),
@@ -2246,13 +2252,13 @@ impl ProjectGraph {
         println!("Symbols: {}", self.symbols.len());
         println!("Chunks: {}", self.chunks.len());
         println!("Edges: {}", self.edges.len());
-        
+
         // Count edges by type
         let mut symbol_to_chunk = 0;
         let mut symbol_to_symbol = 0;
         let mut file_to_file = 0;
         let mut chunk_to_chunk = 0;
-        
+
         for edge in &self.edges {
             match edge.kind {
                 GraphEdgeKind::SymbolToChunk => symbol_to_chunk += 1,
@@ -2261,19 +2267,19 @@ impl ProjectGraph {
                 GraphEdgeKind::ChunkToChunk => chunk_to_chunk += 1,
             }
         }
-        
+
         println!("\nEdge breakdown:");
         println!("  Symbol → Chunk: {}", symbol_to_chunk);
         println!("  Symbol → Symbol: {}", symbol_to_symbol);
         println!("  File → File: {}", file_to_file);
         println!("  Chunk → Chunk: {}", chunk_to_chunk);
-        
+
         // Count symbols by kind
         let mut symbol_kinds = std::collections::HashMap::new();
         for symbol in &self.symbols {
             *symbol_kinds.entry(symbol.kind.clone()).or_insert(0) += 1;
         }
-        
+
         println!("\nSymbol breakdown:");
         let mut kinds: Vec<_> = symbol_kinds.iter().collect();
         kinds.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
