@@ -170,6 +170,281 @@ fn detect_changed_files_from_hashes(
     changed
 }
 
+/// Run the "ask" command - answer a natural language question about a docpack
+async fn run_ask_command(args: &[String]) -> Result<()> {
+    if args.len() < 4 {
+        eprintln!("Usage: doctown ask <docpack> \"<question>\"");
+        eprintln!();
+        eprintln!("Example:");
+        eprintln!("  doctown ask output.docpack \"How do I add a new MCP tool?\"");
+        std::process::exit(1);
+    }
+
+    let docpack_path = &args[2];
+    let question = &args[3];
+
+    // Load the docpack
+    println!("📦 Loading docpack: {}", docpack_path);
+    let file = std::fs::File::open(docpack_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    // Load agent index
+    let agent_index: docpack::AgentIndex = {
+        let mut file = archive.by_name("agent_index.json")?;
+        let mut content = String::new();
+        std::io::Read::read_to_string(&mut file, &mut content)?;
+        serde_json::from_str(&content)?
+    };
+
+    // Load chunks
+    let chunks: Vec<docpack::ChunkEntry> = {
+        let mut file = archive.by_name("chunks.json")?;
+        let mut content = String::new();
+        std::io::Read::read_to_string(&mut file, &mut content)?;
+        serde_json::from_str(&content)?
+    };
+
+    // Load embeddings
+    let embeddings: Vec<ingest::Embedding> = {
+        let mut file = archive.by_name("embeddings.bin")?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut bytes)?;
+
+        // Get dimension from manifest
+        let manifest_file = std::fs::File::open(docpack_path)?;
+        let mut manifest_archive = zip::ZipArchive::new(manifest_file)?;
+        let manifest: docpack::Manifest = {
+            let mut file = manifest_archive.by_name("manifest.json")?;
+            let mut content = String::new();
+            std::io::Read::read_to_string(&mut file, &mut content)?;
+            serde_json::from_str(&content)?
+        };
+
+        let dim = manifest.embedding_dimensions;
+        if dim == 0 {
+            Vec::new()
+        } else {
+            let n_floats = bytes.len() / 4;
+            let n_embeddings = n_floats / dim;
+            let mut embeddings = Vec::with_capacity(n_embeddings);
+
+            for i in 0..n_embeddings {
+                let start = i * dim * 4;
+                let end = start + dim * 4;
+                let chunk = &bytes[start..end];
+
+                let mut vec = Vec::with_capacity(dim);
+                for j in 0..dim {
+                    let offset = j * 4;
+                    let float_bytes = [
+                        chunk[offset],
+                        chunk[offset + 1],
+                        chunk[offset + 2],
+                        chunk[offset + 3],
+                    ];
+                    vec.push(f32::from_le_bytes(float_bytes));
+                }
+                embeddings.push(std::sync::Arc::from(vec.into_boxed_slice()));
+            }
+            embeddings
+        }
+    };
+
+    // Initialize embedding engine
+    let mut embedding_engine = match embedding::EmbeddingEngine::new(
+        "models/minilm-l6/model.onnx",
+        "models/minilm-l6/tokenizer.json",
+    ) {
+        Ok(engine) => {
+            println!("✅ Embedding engine initialized");
+            Some(engine)
+        }
+        Err(e) => {
+            println!("⚠️  Embedding engine unavailable: {} (using keyword search)", e);
+            None
+        }
+    };
+
+    // Initialize LLM engine
+    let llm_engine = match doctown::llm::LlmEngine::new(None) {
+        Ok(engine) => {
+            println!("✅ LLM engine initialized");
+            Some(engine)
+        }
+        Err(e) => {
+            println!("⚠️  LLM engine unavailable: {}", e);
+            None
+        }
+    };
+
+    // Use the query API that we just created
+    println!("\n🤔 Question: {}", question);
+    println!("🔍 Searching for relevant information...\n");
+    
+    // Embed the question
+    let question_embedding = if let Some(ref mut engine) = embedding_engine {
+        let emb = engine.embed(question)?;
+        println!("📊 Question embedding dimension: {}", emb.len());
+        if !embeddings.is_empty() {
+            println!("📊 Docpack embedding dimension: {}", embeddings[0].len());
+            println!("📊 Total embeddings in docpack: {}", embeddings.len());
+        }
+        emb
+    } else {
+        // Fallback to keyword search
+        println!("💡 Answer (keyword-based):\n");
+        let query_lower = question.to_lowercase();
+        let mut relevant_symbols: Vec<_> = agent_index
+            .symbols
+            .iter()
+            .filter_map(|(name, entry)| {
+                let name_lower = name.to_lowercase();
+                let summary_lower = entry.summary.to_lowercase();
+                
+                let mut score = 0.0;
+                if name_lower.contains(&query_lower) {
+                    score += 10.0;
+                }
+                if summary_lower.contains(&query_lower) {
+                    score += 5.0;
+                }
+                
+                if score > 0.0 {
+                    Some((name, entry, score))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        relevant_symbols.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        relevant_symbols.truncate(5);
+        
+        if relevant_symbols.is_empty() {
+            println!("❌ No relevant symbols found. Try rephrasing your question.");
+        } else {
+            println!("Found {} relevant symbols:\n", relevant_symbols.len());
+            for (i, (name, entry, _score)) in relevant_symbols.iter().enumerate() {
+                println!("{}. {} ({})", i + 1, name, entry.kind);
+                println!("   File: {}", entry.file);
+                println!("   {}\n", entry.summary);
+            }
+        }
+        
+        return Ok(());
+    };
+
+    // Semantic search via embeddings
+    let mut scored_chunks: Vec<(usize, f32)> = embeddings
+        .iter()
+        .enumerate()
+        .map(|(idx, emb)| {
+            let score = cosine_similarity(&question_embedding, emb);
+            (idx, score)
+        })
+        .collect();
+
+    scored_chunks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    
+    // Debug: show top scores
+    println!("🔍 Top 5 chunk similarity scores:");
+    for (i, (idx, score)) in scored_chunks.iter().take(5).enumerate() {
+        println!("  {}. Chunk {}: {:.4}", i + 1, idx, score);
+    }
+    println!();
+    
+    scored_chunks.truncate(10);
+
+    // Map chunks to symbols
+    let mut symbol_scores: HashMap<String, f32> = HashMap::new();
+    for (chunk_idx, score) in &scored_chunks {
+        if *chunk_idx >= chunks.len() {
+            continue;
+        }
+        let chunk = &chunks[*chunk_idx];
+
+        for (symbol_name, symbol_entry) in agent_index.symbols.iter() {
+            if symbol_entry.file == chunk.file_path {
+                *symbol_scores.entry(symbol_name.clone()).or_insert(0.0) += score;
+            }
+        }
+    }
+
+    let mut relevant_symbols: Vec<_> = symbol_scores
+        .iter()
+        .filter_map(|(name, score)| {
+            agent_index.symbols.get(name).map(|entry| (name, entry, *score))
+        })
+        .collect();
+
+    relevant_symbols.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    relevant_symbols.truncate(5);
+
+    // Display results
+    println!("💡 Answer:\n");
+    
+    if relevant_symbols.is_empty() {
+        println!("❌ No relevant symbols found. Try rephrasing your question.");
+        return Ok(());
+    }
+
+    // Generate LLM answer if available
+    if let Some(ref llm) = llm_engine {
+        let mut context = String::new();
+        context.push_str("Relevant symbols:\n\n");
+        
+        for (i, (name, entry, _score)) in relevant_symbols.iter().enumerate() {
+            context.push_str(&format!(
+                "{}. {} ({})\n   File: {}\n   {}\n\n",
+                i + 1, name, entry.kind, entry.file, entry.summary
+            ));
+        }
+
+        let prompt = format!(
+            "You are a helpful coding assistant. Answer this question about a codebase:\n\n\
+            Question: {}\n\n\
+            {}\
+            Provide a clear, concise answer with specific symbol names and file paths.",
+            question, context
+        );
+
+        match llm.explain_symbol("answer", "response", None, Some(&prompt), "Generating answer") {
+            Ok(answer) => {
+                println!("{}\n", answer);
+            }
+            Err(e) => {
+                eprintln!("⚠️  Failed to generate LLM answer: {}", e);
+            }
+        }
+    }
+
+    println!("📚 Relevant symbols:\n");
+    for (i, (name, entry, score)) in relevant_symbols.iter().enumerate() {
+        println!("{}. **{}** ({})", i + 1, name, entry.kind);
+        println!("   File: `{}`", entry.file);
+        println!("   Score: {:.3}", score);
+        println!("   {}\n", entry.summary);
+    }
+
+    Ok(())
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+
+    let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+
+    dot_product / (norm_a * norm_b)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let wall_start: DateTime<Utc> = Utc::now();
@@ -181,13 +456,36 @@ async fn main() -> Result<()> {
     report.args_parsed = Some(Utc::now());
 
     if args.len() < 2 {
-        eprintln!("Usage: doctown-builder <zip-path-or-url> [--update <existing-docpack>]");
-        eprintln!("       doctown-builder <zip-path-or-url>  # Full build");
-        eprintln!("       doctown-builder <zip-path-or-url> --update output.docpack  # Incremental update");
+        eprintln!("Usage: doctown <command> [options]");
+        eprintln!();
+        eprintln!("Commands:");
+        eprintln!("  build <zip-path-or-url>              Build a docpack from source");
+        eprintln!("  ask <docpack> \"<question>\"            Ask a question about the codebase");
+        eprintln!();
+        eprintln!("Build Options:");
+        eprintln!("  --update <existing-docpack>          Incremental update");
+        eprintln!();
+        eprintln!("Examples:");
+        eprintln!("  doctown build project.zip");
+        eprintln!("  doctown build project.zip --update output.docpack");
+        eprintln!("  doctown ask output.docpack \"How do I add a new MCP tool?\"");
         std::process::exit(1);
     }
 
-    let source = &args[1];
+    // Check for "ask" subcommand
+    if args[1] == "ask" {
+        return run_ask_command(&args).await;
+    }
+
+    // Handle "build" subcommand (or default to build if no subcommand)
+    let source_idx = if args[1] == "build" { 2 } else { 1 };
+    
+    if args.len() <= source_idx {
+        eprintln!("Error: Missing source path for build command");
+        std::process::exit(1);
+    }
+
+    let source = &args[source_idx];
 
     // Check for --update flag
     let update_mode = args.iter().any(|arg| arg == "--update");

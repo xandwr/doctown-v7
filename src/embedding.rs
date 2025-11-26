@@ -69,8 +69,32 @@ impl EmbeddingEngine {
 
         // 4) extract embedding - get the first output and convert to Vec
         let output_tensor = outputs[0].try_extract_tensor::<f32>()?;
-        let (_shape, data) = output_tensor;
-        let mut embedding = data.to_vec();
+        let (shape, data) = output_tensor;
+        
+        // The output shape is [batch_size, seq_len, hidden_dim]
+        // For sentence embeddings, we need to do mean pooling over seq_len
+        // Shape: [1, seq_len, 384] -> [384]
+        let batch_size = shape[0];
+        let seq_len = shape[1] as usize;
+        let hidden_dim = shape[2] as usize;
+        
+        if batch_size != 1 {
+            anyhow::bail!("Expected batch_size=1, got {}", batch_size);
+        }
+        
+        // Mean pooling: average the embeddings across the sequence length
+        let mut embedding = vec![0.0f32; hidden_dim];
+        for i in 0..seq_len {
+            for j in 0..hidden_dim {
+                let idx = i * hidden_dim + j;
+                embedding[j] += data[idx];
+            }
+        }
+        
+        // Divide by sequence length to get the mean
+        for val in &mut embedding {
+            *val /= seq_len as f32;
+        }
 
         // L2-normalize embedding so cosine similarity works reliably
         Self::l2_normalize(&mut embedding);

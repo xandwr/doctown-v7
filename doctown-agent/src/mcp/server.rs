@@ -50,6 +50,7 @@ pub struct McpServer {
     file_structure: Vec<doctown::docpack::FileStructureNode>,
     documentation: doctown::docpack::DocumentationFile,
     llm_engine: Option<doctown::llm::LlmEngine>, // Optional LLM for generating plain-English explanations
+    embedding_engine: Option<doctown::embedding::EmbeddingEngine>, // Optional embedding engine for semantic search
 }
 
 impl McpServer {
@@ -170,6 +171,21 @@ impl McpServer {
             }
         };
 
+        // Try to initialize embedding engine (optional, for semantic search)
+        let embedding_engine = match doctown::embedding::EmbeddingEngine::new(
+            "models/minilm-l6/model.onnx",
+            "models/minilm-l6/tokenizer.json",
+        ) {
+            Ok(engine) => {
+                eprintln!("✅ Embedding engine initialized (semantic search available)");
+                Some(engine)
+            }
+            Err(e) => {
+                eprintln!("⚠️  Embedding engine unavailable: {} (semantic search disabled)", e);
+                None
+            }
+        };
+
         Ok(Self {
             docpack_path,
             agent_index,
@@ -179,6 +195,7 @@ impl McpServer {
             file_structure,
             documentation,
             llm_engine,
+            embedding_engine,
         })
     }
 
@@ -531,6 +548,18 @@ impl McpServer {
                     }
                 }
             }),
+            json!({
+                "name": "ask",
+                "description": "Answer natural language questions about the codebase. This conversational interface uses embeddings and LLM to provide plain-English explanations, relevant symbols, files, and code examples. Example: 'How do I add a new MCP tool?'",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string", "description": "Natural language question about the codebase"},
+                        "limit": {"type": "number", "description": "Maximum number of relevant symbols to return (default: 10)"}
+                    },
+                    "required": ["question"]
+                }
+            }),
         ];
 
         Ok(json!({"tools": tools}))
@@ -568,6 +597,7 @@ impl McpServer {
             "update_file_section" => self.tool_update_file_section(arguments)?,
             "create_test_for_symbol" => self.tool_create_test_for_symbol(arguments)?,
             "analyze_hotspots" => self.tool_analyze_hotspots(arguments)?,
+            "ask" => self.tool_ask(arguments)?,
             _ => return Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
 
@@ -855,6 +885,22 @@ impl McpServer {
         };
 
         let response = api::hotspots::analyze_hotspots(&query, &self.agent_index, &self.graph, &self.documentation)?;
+        Ok(serde_json::to_value(response)?)
+    }
+
+    fn tool_ask(&mut self, args: Option<Value>) -> Result<Value> {
+        let query: api::query::ConversationalQuery =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+
+        let response = api::query::answer_question(
+            &query,
+            &self.agent_index.symbols,
+            &self.chunks,
+            &self.embeddings,
+            self.embedding_engine.as_mut(),
+            self.llm_engine.as_ref(),
+        )?;
+
         Ok(serde_json::to_value(response)?)
     }
 }
