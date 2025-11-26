@@ -95,7 +95,7 @@ pub struct DocpackBuilder {
     manifest: Manifest,
     file_structure: Vec<FileStructureNode>,
     chunks: Vec<ChunkEntry>,
-    embeddings: Vec<Vec<f32>>,
+    embeddings: Vec<crate::ingest::Embedding>,
     graph: GraphFile,
     documentation: DocumentationFile,
 }
@@ -363,7 +363,7 @@ impl DocpackBuilder {
         // Write embeddings.bin (binary format: row-major f32 array)
         zip.start_file("embeddings.bin", options)?;
         for embedding in &self.embeddings {
-            for &value in embedding {
+            for &value in embedding.as_ref() {
                 zip.write_all(&value.to_le_bytes())?;
             }
         }

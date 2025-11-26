@@ -424,7 +424,7 @@ pub struct SymbolNode {
 
 /// Embedding vector placeholder.
 #[allow(dead_code)]
-pub type Embedding = Vec<f32>;
+pub type Embedding = std::sync::Arc<[f32]>;
 
 /// A simple graph edge connecting two symbols/modules.
 #[allow(dead_code)]
