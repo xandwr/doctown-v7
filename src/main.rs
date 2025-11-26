@@ -6,7 +6,7 @@ mod embedding;
 mod ingest;
 
 use anyhow::Result;
-use ingest::{code_file_stats, load_zip, unzip_to_memory, unzip_to_memory_parallel};
+use ingest::{code_file_stats, load_zip, unzip_to_memory_parallel};
 
 #[tokio::main]
 async fn main() -> Result<()> {

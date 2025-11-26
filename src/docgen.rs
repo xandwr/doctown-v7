@@ -17,6 +17,7 @@ pub struct GeneratedDocs {
 
 /// Module-level summary with aggregated stats
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ModuleSummary {
     pub module_path: String,
     pub description: String,
@@ -30,6 +31,7 @@ pub struct ModuleSummary {
 
 /// Per-file summary with detailed breakdown
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FileSummary {
     pub file_path: String,
     pub description: String,
@@ -46,6 +48,7 @@ pub struct FileSummary {
 }
 
 /// Struct documentation with fields and relationships
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StructDoc {
     pub name: String,
@@ -59,6 +62,7 @@ pub struct StructDoc {
     pub related_structs: Vec<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FieldInfo {
     pub name: String,
@@ -69,6 +73,7 @@ pub struct FieldInfo {
 
 /// Function documentation with signature and usage
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FunctionDoc {
     pub name: String,
     pub file_path: String,
@@ -85,6 +90,7 @@ pub struct FunctionDoc {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ParamInfo {
     pub name: String,
     pub param_type: String,
@@ -105,6 +111,7 @@ pub struct ArchitectureOverview {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CoreComponent {
     pub name: String,
     pub purpose: String,
@@ -114,6 +121,7 @@ pub struct CoreComponent {
 
 /// Dependency relationships and analysis
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DependencyOverview {
     pub internal_dependencies: Vec<DependencyEdge>,
     pub external_dependencies: Vec<ExternalDependency>,
@@ -124,6 +132,7 @@ pub struct DependencyOverview {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DependencyEdge {
     pub from: String,
     pub to: String,
@@ -132,6 +141,7 @@ pub struct DependencyEdge {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ExternalDependency {
     pub name: String,
     pub version: Option<String>,
@@ -139,6 +149,7 @@ pub struct ExternalDependency {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CircularDep {
     pub cycle: Vec<String>,
     pub severity: String,
@@ -146,6 +157,7 @@ pub struct CircularDep {
 
 /// Semantic cluster/topic summary
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ClusterSummary {
     pub cluster_id: String,
     pub topic_label: String,
@@ -158,6 +170,7 @@ pub struct ClusterSummary {
 }
 
 /// Main documentation generator
+#[allow(dead_code)]
 pub struct DocGenerator<'a> {
     processed_files: &'a [ProcessedFile],
     all_edges: Vec<GraphEdge>,
