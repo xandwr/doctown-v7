@@ -496,7 +496,13 @@ pub async fn process_file(
     // 4) embeddings (optional, async to support remote embedders)
     let embeddings = if plan.get_embed() {
         if let Some(eng) = engine {
-            embed_chunks(&chunks, eng).await.unwrap_or_default()
+            match embed_chunks(&chunks, eng).await {
+                Ok(emb) => emb,
+                Err(e) => {
+                    eprintln!("⚠️ Embedding error for {}: {}", node.path, e);
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         }
