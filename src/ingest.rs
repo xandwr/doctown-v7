@@ -6,6 +6,7 @@ use tokio::fs;
 use url::Url;
 use zip::ZipArchive;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IngestResult {
     pub files: Vec<FileNode>,
@@ -38,6 +39,7 @@ impl FileKind {
 }
 
 /// Describes extraction kinds that a pipeline may perform on a file.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ExtractionKind {
     FullText,
@@ -49,6 +51,7 @@ pub enum ExtractionKind {
 }
 
 /// Strategies for chunking content.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ChunkingStrategy {
     Lines(usize),      // chunk by N lines
@@ -59,6 +62,7 @@ pub enum ChunkingStrategy {
 }
 
 /// How to assemble graph nodes from the extracted/chunked pieces.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum AssemblyStrategy {
     OneNodePerFile,
@@ -75,6 +79,7 @@ pub struct ProcessingPlan {
     symbol_parse: bool,
     embed: bool,
     assembly: AssemblyStrategy,
+    skip: bool,
     metadata: Vec<String>,
 }
 
@@ -87,6 +92,7 @@ impl ProcessingPlan {
             symbol_parse: false,
             embed: false,
             assembly: AssemblyStrategy::OneNodePerFile,
+            skip: false,
             metadata: Vec::new(),
         }
     }
@@ -121,6 +127,11 @@ impl ProcessingPlan {
         self
     }
 
+    pub fn skip(mut self, skip: bool) -> Self {
+        self.skip = skip;
+        self
+    }
+
     // Optional getters if external code needs read access later.
     pub fn get_extract(&self) -> &Vec<ExtractionKind> {
         &self.extract
@@ -139,6 +150,9 @@ impl ProcessingPlan {
     }
     pub fn get_metadata(&self) -> &Vec<String> {
         &self.metadata
+    }
+    pub fn get_skip(&self) -> bool {
+        self.skip
     }
 }
 
@@ -177,17 +191,108 @@ pub fn filekind_to_plan(kind: &FileKind) -> ProcessingPlan {
 
 /// Helper: produce a plan for an individual `FileNode`.
 pub fn plan_for_file_node(node: &FileNode) -> ProcessingPlan {
-    filekind_to_plan(&node.kind)
+    let mut plan = filekind_to_plan(&node.kind);
+
+    // If the path matches common noise/asset files, mark the plan to skip processing.
+    if is_noise_file(&node.path) {
+        plan = plan.skip(true);
+    }
+
+    plan
+}
+
+/// Return true for files we should ignore entirely (licenses, images, locks, etc.)
+fn is_noise_file(path: &str) -> bool {
+    use std::path::Path;
+
+    let p = Path::new(path);
+    let file_name = match p.file_name().and_then(|s| s.to_str()) {
+        Some(n) => n.to_lowercase(),
+        None => return false,
+    };
+
+    // Exact filename matches (case-insensitive)
+    let exact = [
+        "license",
+        "copying",
+        ".gitignore",
+        ".gitattributes",
+        ".editorconfig",
+    ];
+    if exact.iter().any(|e| file_name == *e) {
+        return true;
+    }
+
+    // README without extension (skip README but not README.md)
+    if p.extension().is_none() {
+        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+            if stem.eq_ignore_ascii_case("readme") {
+                return true;
+            }
+        }
+    }
+
+    // Prefix/wildcard matches
+    let stem = p
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let norm_stem = stem.replace('-', "_");
+    let prefixes = [
+        "changelog",
+        "contributing",
+        "code_of_conduct",
+        "code_of_conduct.md",
+        "code_of_conduct.txt",
+    ];
+    if prefixes.iter().any(|pr| norm_stem.starts_with(pr)) {
+        return true;
+    }
+
+    // Dotfile config patterns like .prettierrc*, .eslintrc*
+    if file_name.starts_with(".prettierrc") || file_name.starts_with(".eslintrc") {
+        return true;
+    }
+
+    // Lockfiles: Cargo.lock, package-lock.json, yarn.lock, pnpm-lock.yaml, *.lock
+    if file_name.ends_with(".lock")
+        || file_name == "package-lock.json"
+        || file_name == "yarn.lock"
+        || file_name.starts_with("pnpm-lock")
+        || file_name == "cargo.lock"
+    {
+        return true;
+    }
+
+    // Binary/media extensions
+    if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+        let ext = ext.to_lowercase();
+        let bin_exts = [
+            "png", "jpg", "jpeg", "gif", "ico", "pdf", "svg", "wasm", "ttf", "woff", "woff2",
+        ];
+        if bin_exts.contains(&ext.as_str()) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// A minimal chunk representation produced by chunking.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct ChunkId(pub String);
+
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Chunk {
-    pub id: String,
+    pub id: ChunkId,
     pub text: String,
 }
 
 /// A minimal symbol node representation parsed from source files.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SymbolNode {
     pub name: String,
@@ -196,6 +301,7 @@ pub struct SymbolNode {
 }
 
 /// Embedding vector placeholder.
+#[allow(dead_code)]
 pub type Embedding = Vec<f32>;
 
 /// ProcessedFile is the executor output for a single file + plan.
@@ -207,8 +313,23 @@ pub struct ProcessedFile {
     pub metadata: HashMap<String, String>,
 }
 
+impl ProcessedFile {
+    pub fn empty(_node: &FileNode) -> Self {
+        ProcessedFile {
+            chunks: Vec::new(),
+            symbols: Vec::new(),
+            embeddings: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+}
+
 /// Orchestrator: execute a ProcessingPlan on a `FileNode`.
-pub fn process_file(node: &FileNode, plan: &ProcessingPlan) -> ProcessedFile {
+pub async fn process_file(node: &FileNode, plan: &ProcessingPlan) -> ProcessedFile {
+    if plan.get_skip() {
+        return ProcessedFile::empty(node);
+    }
+
     // 1) extraction
     let extracted = run_extractions(node, plan.get_extract());
 
@@ -222,9 +343,9 @@ pub fn process_file(node: &FileNode, plan: &ProcessingPlan) -> ProcessedFile {
         Vec::new()
     };
 
-    // 4) embeddings (optional)
+    // 4) embeddings (optional, async to support remote embedders)
     let embeddings = if plan.get_embed() {
-        embed_chunks(&chunks)
+        embed_chunks(&chunks).await
     } else {
         Vec::new()
     };
@@ -282,7 +403,7 @@ fn run_chunking(
 ) -> Vec<Chunk> {
     match strategy {
         ChunkingStrategy::None => vec![Chunk {
-            id: "full".to_string(),
+            id: ChunkId("full".to_string()),
             text: extracted
                 .iter()
                 .map(|(_, t)| t.clone())
@@ -299,7 +420,7 @@ fn run_chunking(
                     if line.trim_start().starts_with('#') {
                         if !buffer.is_empty() {
                             out.push(Chunk {
-                                id: format!("h-{}-{}", i, j),
+                                id: ChunkId(format!("h-{}-{}", i, j)),
                                 text: buffer.clone(),
                             });
                             buffer.clear();
@@ -313,14 +434,14 @@ fn run_chunking(
                 }
                 if !buffer.is_empty() {
                     out.push(Chunk {
-                        id: format!("h-{}-tail", i),
+                        id: ChunkId(format!("h-{}-tail", i)),
                         text: buffer,
                     });
                 }
             }
             if out.is_empty() {
                 out.push(Chunk {
-                    id: "empty".to_string(),
+                    id: ChunkId("empty".to_string()),
                     text: String::new(),
                 });
             }
@@ -335,7 +456,7 @@ fn run_chunking(
                 .join("\n");
             for (i, chunk) in full.lines().collect::<Vec<&str>>().chunks(*n).enumerate() {
                 out.push(Chunk {
-                    id: format!("l-{}", i),
+                    id: ChunkId(format!("l-{}", i)),
                     text: chunk.join("\n"),
                 });
             }
@@ -351,7 +472,7 @@ fn run_chunking(
             full.split("\n\n")
                 .enumerate()
                 .map(|(i, s)| Chunk {
-                    id: format!("c-{}", i),
+                    id: ChunkId(format!("c-{}", i)),
                     text: s.trim().to_string(),
                 })
                 .collect()
@@ -365,7 +486,7 @@ fn run_chunking(
             full.split(d)
                 .enumerate()
                 .map(|(i, s)| Chunk {
-                    id: format!("d-{}", i),
+                    id: ChunkId(format!("d-{}", i)),
                     text: s.to_string(),
                 })
                 .collect()
@@ -407,8 +528,9 @@ fn parse_symbols(node: &FileNode) -> Vec<SymbolNode> {
 }
 
 /// Embed chunks. Placeholder that returns zero-length vectors.
-fn embed_chunks(chunks: &Vec<Chunk>) -> Vec<Embedding> {
-    chunks.iter().map(|_c| Vec::new()).collect()
+async fn embed_chunks(_chunks: &Vec<Chunk>) -> Vec<Embedding> {
+    // In production this would call an async embedding service.
+    Vec::new()
 }
 
 /// Assemble nodes; placeholder returns nothing but could build edges in future.
@@ -473,10 +595,68 @@ fn normalize_path(path: &str) -> String {
     path.to_string()
 }
 
-pub fn unzip_to_memory(zip_bytes: &[u8]) -> Result<Vec<FileNode>> {
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_noise_file_positive() {
+        let positives = vec![
+            "LICENSE",
+            "COPYING",
+            ".gitignore",
+            "Cargo.lock",
+            "package-lock.json",
+            "image.png",
+            "font.woff2",
+            "README",
+            "CHANGELOG.md",
+            "CONTRIBUTING",
+        ];
+
+        for p in positives {
+            assert!(is_noise_file(p), "{} should be considered noise", p);
+        }
+    }
+
+    #[test]
+    fn test_is_noise_file_negative() {
+        let negatives = vec!["README.md", "src/lib.rs", "main.rs", "notes.txt"];
+        for n in negatives {
+            assert!(!is_noise_file(n), "{} should NOT be considered noise", n);
+        }
+    }
+
+    #[test]
+    fn test_filekind_to_plan_defaults() {
+        let sc = filekind_to_plan(&FileKind::SourceCode);
+        assert!(sc.get_symbol_parse());
+        assert!(sc.get_embed());
+        assert!(matches!(sc.get_chunking(), ChunkingStrategy::CodeAware));
+
+        let doc = filekind_to_plan(&FileKind::Documentation);
+        assert!(!doc.get_symbol_parse());
+        assert!(doc.get_embed());
+        assert!(matches!(
+            doc.get_chunking(),
+            ChunkingStrategy::HeadingSections
+        ));
+
+        let cfg = filekind_to_plan(&FileKind::Config);
+        assert!(!cfg.get_symbol_parse());
+        assert!(!cfg.get_embed());
+        assert!(matches!(cfg.get_chunking(), ChunkingStrategy::None));
+    }
+}
+
+// The synchronous `unzip_to_memory` was removed in favour of an async API.
+// Use the async `unzip_to_memory` below which returns processed files.
+
+/// Async helper: unzip the archive and run the processing executor on each file.
+pub async fn unzip_to_memory(zip_bytes: &[u8]) -> Result<Vec<ProcessedFile>> {
     let cursor = Cursor::new(zip_bytes.to_vec());
     let mut archive = ZipArchive::new(cursor)?;
-    let mut files = Vec::new();
+    let mut processed = Vec::new();
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
@@ -501,10 +681,13 @@ pub fn unzip_to_memory(zip_bytes: &[u8]) -> Result<Vec<FileNode>> {
 
         let kind = FileKind::classify(extension);
 
-        files.push(FileNode { path, bytes, kind });
+        let node = FileNode { path, bytes, kind };
+        let plan = plan_for_file_node(&node);
+        let pf = process_file(&node, &plan).await;
+        processed.push(pf);
     }
 
-    Ok(files)
+    Ok(processed)
 }
 
 pub async fn load_zip(source: &str) -> Result<Vec<u8>> {

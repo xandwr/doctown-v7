@@ -17,11 +17,17 @@ async fn main() -> Result<()> {
 
     // 1: Ingest
     let zip_bytes = load_zip(source).await?;
-    let files = unzip_to_memory(&zip_bytes)?;
+    let processed = unzip_to_memory(&zip_bytes).await?;
 
-    println!("Loaded {} files:", files.len());
-    for f in &files {
-        println!(" - {} ({} bytes) [{:?}]", f.path, f.bytes.len(), f.kind);
+    println!("Processed {} files:", processed.len());
+    for pf in &processed {
+        println!(
+            " - chunks={} symbols={} embeds={} metadata_keys={}",
+            pf.chunks.len(),
+            pf.symbols.len(),
+            pf.embeddings.len(),
+            pf.metadata.len()
+        );
     }
 
     // Pass bytes into the pipeline later
