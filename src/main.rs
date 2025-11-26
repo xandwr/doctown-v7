@@ -1,5 +1,6 @@
 // main.rs
 
+mod community;
 mod docgen;
 mod docpack;
 mod embedding;
@@ -7,10 +8,88 @@ mod ingest;
 
 use anyhow::Result;
 use ingest::{code_file_stats, load_zip, unzip_to_memory_parallel};
+use chrono::{DateTime, Utc};
+use std::time::Instant;
+
+/// Lightweight runtime execution report collector for `main`.
+struct ExecutionReport {
+    wall_start: Option<DateTime<Utc>>,
+    args_parsed: Option<DateTime<Utc>>,
+    before_zip_load: Option<DateTime<Utc>>,
+    zip_loaded: Option<DateTime<Utc>>,
+    engine_initialized: Option<DateTime<Utc>>,
+    before_processing: Option<DateTime<Utc>>,
+    processed: Option<DateTime<Utc>>,
+    graph_built: Option<DateTime<Utc>>,
+    docpack_written: Option<DateTime<Utc>>,
+    finished: Option<DateTime<Utc>>,
+    total_wall_seconds: Option<f64>,
+}
+
+impl ExecutionReport {
+    fn new() -> Self {
+        Self {
+            wall_start: None,
+            args_parsed: None,
+            before_zip_load: None,
+            zip_loaded: None,
+            engine_initialized: None,
+            before_processing: None,
+            processed: None,
+            graph_built: None,
+            docpack_written: None,
+            finished: None,
+            total_wall_seconds: None,
+        }
+    }
+
+    fn print(&self) {
+        println!("\n=== Execution Report ===");
+        let mut prev: Option<DateTime<Utc>> = self.wall_start.or(self.args_parsed);
+
+        macro_rules! show {
+            ($label:expr, $t:expr) => {
+                if let Some(ts) = $t {
+                    let s = ts.to_rfc3339();
+                    let delta = if let Some(p) = prev {
+                        let d = ts.signed_duration_since(p);
+                        format!("+{:.3}s", d.num_milliseconds() as f64 / 1000.0)
+                    } else {
+                        "".to_string()
+                    };
+                    println!(" - {:20}: {} {}", $label, s, delta);
+                    prev = Some(ts);
+                }
+            };
+        }
+
+        show!("wall_start", self.wall_start);
+        show!("args_parsed", self.args_parsed);
+        show!("before_zip_load", self.before_zip_load);
+        show!("zip_loaded", self.zip_loaded);
+        show!("engine_init", self.engine_initialized);
+        show!("before_processing", self.before_processing);
+        show!("processed", self.processed);
+        show!("graph_built", self.graph_built);
+        show!("docpack_written", self.docpack_written);
+        show!("finished", self.finished);
+
+        if let Some(total) = self.total_wall_seconds {
+            println!(" - {:20}: total_wall_secs = {:.3}s", "summary", total);
+        }
+        println!("========================\n");
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let wall_start: DateTime<Utc> = Utc::now();
+    let run_start = Instant::now();
+
+    let mut report = ExecutionReport::new();
+
     let args: Vec<String> = std::env::args().collect();
+    report.args_parsed = Some(Utc::now());
 
     if args.len() < 2 {
         eprintln!("Usage: doctown-builder <zip-path-or-url>");
@@ -20,7 +99,9 @@ async fn main() -> Result<()> {
     let source = &args[1];
 
     // 1: Ingest
+    report.before_zip_load = Some(Utc::now());
     let zip_bytes = load_zip(source).await?;
+    report.zip_loaded = Some(Utc::now());
 
     // To enable embeddings, create an EmbeddingEngine:
     use embedding::EmbeddingEngine;
@@ -28,15 +109,18 @@ async fn main() -> Result<()> {
         "models/minilm-l6/model.onnx",
         "models/minilm-l6/tokenizer.json",
     )?;
+    report.engine_initialized = Some(Utc::now());
 
     // Use the parallel pipeline for maximum performance:
     // - Parses & chunks files in parallel with Rayon
     // - Batches all embeddings together for GPU efficiency
     // - On 4070 Ti: 5,000 chunks embed in ~150ms
     println!("🚀 Using parallel pipeline...");
-    let start = std::time::Instant::now();
+    report.before_processing = Some(Utc::now());
+    let start = Instant::now();
     let processed = unzip_to_memory_parallel(&zip_bytes, Some(&mut engine)).await?;
     let elapsed = start.elapsed();
+    report.processed = Some(Utc::now());
     println!("✅ Processed in {:.2}s", elapsed.as_secs_f64());
 
     // For comparison, the old sequential version:
@@ -200,10 +284,17 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Build the semantic project graph
+    // Build the semantic project graph with similarity edges and community detection
     println!("\n=== Building Semantic Project Graph ===");
-    let graph = ingest::ProjectGraph::from_processed_files(processed.clone());
+    let graph = ingest::ProjectGraph::from_processed_files_with_communities(
+        processed.clone(),
+        0.5, // similarity threshold: only connect chunks with cosine similarity >= 0.5
+    );
     graph.print_summary();
+
+    // Print detected communities/subsystems and refactor suggestions
+    graph.print_communities();
+    report.graph_built = Some(Utc::now());
 
     // Generate .docpack file
     println!("\n=== Generating .docpack file ===");
@@ -235,6 +326,14 @@ async fn main() -> Result<()> {
 
     builder.write_to_file(&output_path)?;
     println!("✅ Generated: {}", output_path);
+
+    report.docpack_written = Some(Utc::now());
+    report.finished = Some(Utc::now());
+    report.wall_start = Some(wall_start);
+    report.total_wall_seconds = Some(run_start.elapsed().as_secs_f64());
+
+    // Print concise execution report
+    report.print();
 
     Ok(())
 }

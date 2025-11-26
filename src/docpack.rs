@@ -322,6 +322,7 @@ impl DocpackBuilder {
                     GraphEdgeKind::SymbolToSymbol => "symbol_to_symbol",
                     GraphEdgeKind::FileToFile => "file_to_file",
                     GraphEdgeKind::ChunkToChunk => "chunk_to_chunk",
+                    GraphEdgeKind::SymbolSimilarity => "symbol_similarity",
                 };
 
                 self.graph.edges.push(GraphEdgeEntry {

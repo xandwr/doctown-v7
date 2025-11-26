@@ -428,12 +428,14 @@ pub type Embedding = std::sync::Arc<[f32]>;
 
 /// A simple graph edge connecting two symbols/modules.
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GraphEdgeKind {
     SymbolToChunk,
     SymbolToSymbol,
     FileToFile,
     ChunkToChunk,
+    /// Weighted semantic similarity between two symbols (cosine similarity of embeddings).
+    SymbolSimilarity,
 }
 
 #[allow(dead_code)]
@@ -442,6 +444,8 @@ pub struct GraphEdge {
     pub src: String,
     pub dst: String,
     pub kind: GraphEdgeKind,
+    /// Optional weight for the edge (e.g., similarity score 0.0–1.0).
+    pub weight: Option<f32>,
 }
 
 /// ProcessedFile is the executor output for a single file + plan.
@@ -1765,6 +1769,7 @@ fn assemble_nodes(
                             src: symbol.name.clone(),
                             dst: chunk.id.0.clone(),
                             kind: GraphEdgeKind::SymbolToChunk,
+                            weight: None,
                         });
                     }
                 }
@@ -1779,6 +1784,7 @@ fn assemble_nodes(
                 src: s.name.clone(),
                 dst: parent.clone(),
                 kind: GraphEdgeKind::SymbolToSymbol,
+                weight: None,
             });
         }
     }
@@ -1790,6 +1796,7 @@ fn assemble_nodes(
                 src: parent.clone(),
                 dst: s.name.clone(),
                 kind: GraphEdgeKind::SymbolToSymbol,
+                weight: None,
             });
         }
     }
@@ -1801,6 +1808,7 @@ fn assemble_nodes(
                 src: parent.clone(),
                 dst: s.name.clone(),
                 kind: GraphEdgeKind::SymbolToSymbol,
+                weight: None,
             });
         }
     }
@@ -1823,6 +1831,7 @@ fn assemble_nodes(
                     src: type_name.to_string(),
                     dst: impl_name.clone(),
                     kind: GraphEdgeKind::SymbolToSymbol,
+                    weight: None,
                 });
             }
         }
@@ -1833,6 +1842,7 @@ fn assemble_nodes(
                 src: impl_name.clone(),
                 dst: trait_impl.clone(),
                 kind: GraphEdgeKind::SymbolToSymbol,
+                weight: None,
             });
         }
     }
@@ -2341,20 +2351,77 @@ async fn load_zip_from_url(url: Url) -> Result<Vec<u8>> {
     Ok(res.bytes().await?.to_vec())
 }
 
+use crate::community::{build_similarity_edges, Louvain, SemanticCommunity};
+
+/// A semantic community detected in the codebase.
+#[derive(Debug, Clone)]
+pub struct DetectedCommunity {
+    pub id: usize,
+    pub symbol_names: Vec<String>,
+    pub files: std::collections::HashSet<String>,
+    pub cohesion: f32,
+    pub suggested_label: Option<String>,
+}
+
 pub struct ProjectGraph {
     pub files: Vec<FileNode>,
     pub symbols: Vec<SymbolNode>,
     pub chunks: Vec<Chunk>,
     pub edges: Vec<GraphEdge>,
+    /// Embeddings for each chunk (parallel to chunks vec)
+    pub chunk_embeddings: Vec<Embedding>,
+    /// Maps chunk index to file path
+    pub chunk_to_file: std::collections::HashMap<usize, String>,
+    /// Detected semantic communities/subsystems
+    pub communities: Vec<DetectedCommunity>,
+    /// Modularity score from community detection
+    pub modularity: f64,
 }
 
 impl ProjectGraph {
+    /// Build project graph from processed files.
+    /// This version does NOT compute similarity edges or communities (use `from_processed_files_with_communities` for that).
     pub fn from_processed_files(files: Vec<ProcessedFile>) -> Self {
+        Self::from_processed_files_internal(files, false, 0.5)
+    }
+
+    /// Build project graph with similarity edges and Louvain community detection.
+    /// `similarity_threshold`: minimum cosine similarity (0.0–1.0) to create an edge.
+    pub fn from_processed_files_with_communities(
+        files: Vec<ProcessedFile>,
+        similarity_threshold: f32,
+    ) -> Self {
+        Self::from_processed_files_internal(files, true, similarity_threshold)
+    }
+
+    fn from_processed_files_internal(
+        files: Vec<ProcessedFile>,
+        compute_communities: bool,
+        similarity_threshold: f32,
+    ) -> Self {
+        // Collect all chunk embeddings (preserving order) and build chunk-to-file map
+        let mut chunk_embeddings: Vec<Embedding> = Vec::new();
+        let mut chunk_to_file_map: std::collections::HashMap<usize, String> =
+            std::collections::HashMap::new();
+        let mut chunk_idx = 0;
+
+        for pf in &files {
+            for emb in &pf.embeddings {
+                chunk_embeddings.push(emb.clone());
+                chunk_to_file_map.insert(chunk_idx, pf.file_node.path.clone());
+                chunk_idx += 1;
+            }
+        }
+
         let mut graph = ProjectGraph {
             files: files.iter().map(|f| f.file_node.clone()).collect(),
             symbols: files.iter().flat_map(|f| f.symbols.clone()).collect(),
             chunks: files.iter().flat_map(|f| f.chunks.clone()).collect(),
             edges: files.iter().flat_map(|f| f.graph_edges.clone()).collect(),
+            chunk_embeddings: chunk_embeddings.clone(),
+            chunk_to_file: chunk_to_file_map,
+            communities: Vec::new(),
+            modularity: 0.0,
         };
 
         // File → File: module hierarchy edges
@@ -2365,6 +2432,7 @@ impl ProjectGraph {
                     src: parent_path,
                     dst: file.path.clone(),
                     kind: GraphEdgeKind::FileToFile,
+                    weight: None,
                 });
             }
         }
@@ -2381,11 +2449,82 @@ impl ProjectGraph {
                     src: current.id.0.clone(),
                     dst: next.id.0.clone(),
                     kind: GraphEdgeKind::ChunkToChunk,
+                    weight: None,
                 });
             }
         }
 
+        // Compute similarity edges and communities if requested
+        if compute_communities && !chunk_embeddings.is_empty() {
+            graph.compute_similarity_and_communities(similarity_threshold);
+        }
+
         graph
+    }
+
+    /// Compute chunk-to-chunk similarity edges and run Louvain community detection.
+    fn compute_similarity_and_communities(&mut self, threshold: f32) {
+        let n = self.chunk_embeddings.len();
+        if n < 2 {
+            return;
+        }
+
+        // Build similarity edges between chunks
+        let sim_edges = build_similarity_edges(&self.chunk_embeddings, threshold);
+
+        // Add similarity edges to graph (map chunk indices to chunk IDs)
+        for se in &sim_edges {
+            if se.src < self.chunks.len() && se.dst < self.chunks.len() {
+                self.edges.push(GraphEdge {
+                    src: self.chunks[se.src].id.0.clone(),
+                    dst: self.chunks[se.dst].id.0.clone(),
+                    kind: GraphEdgeKind::SymbolSimilarity,
+                    weight: Some(se.weight),
+                });
+            }
+        }
+
+        // Run Louvain community detection
+        let mut louvain = Louvain::new(n, &sim_edges);
+        let result = louvain.run();
+        self.modularity = result.modularity;
+
+        // Build DetectedCommunity structs
+        for (comm_id, indices) in &result.communities {
+            let mut symbol_names = Vec::new();
+            let mut files = std::collections::HashSet::new();
+
+            for &chunk_idx in indices {
+                if chunk_idx < self.chunks.len() {
+                    let chunk = &self.chunks[chunk_idx];
+                    // Add symbols from this chunk
+                    symbol_names.extend(chunk.containing_symbols.clone());
+
+                    // Use our pre-computed chunk-to-file mapping
+                    if let Some(file_path) = self.chunk_to_file.get(&chunk_idx) {
+                        files.insert(file_path.clone());
+                    }
+                }
+            }
+
+            // Deduplicate symbol names
+            symbol_names.sort();
+            symbol_names.dedup();
+
+            let cohesion = SemanticCommunity::compute_cohesion(indices, &self.chunk_embeddings);
+            let suggested_label = SemanticCommunity::infer_label(&symbol_names);
+
+            self.communities.push(DetectedCommunity {
+                id: *comm_id,
+                symbol_names,
+                files,
+                cohesion,
+                suggested_label,
+            });
+        }
+
+        // Sort communities by size (largest first)
+        self.communities.sort_by(|a, b| b.symbol_names.len().cmp(&a.symbol_names.len()));
     }
 
     /// Print a summary of the graph structure
@@ -2401,6 +2540,7 @@ impl ProjectGraph {
         let mut symbol_to_symbol = 0;
         let mut file_to_file = 0;
         let mut chunk_to_chunk = 0;
+        let mut symbol_similarity = 0;
 
         for edge in &self.edges {
             match edge.kind {
@@ -2408,12 +2548,14 @@ impl ProjectGraph {
                 GraphEdgeKind::SymbolToSymbol => symbol_to_symbol += 1,
                 GraphEdgeKind::FileToFile => file_to_file += 1,
                 GraphEdgeKind::ChunkToChunk => chunk_to_chunk += 1,
+                GraphEdgeKind::SymbolSimilarity => symbol_similarity += 1,
             }
         }
 
         println!("\nEdge breakdown:");
         println!("  Symbol → Chunk: {}", symbol_to_chunk);
         println!("  Symbol → Symbol: {}", symbol_to_symbol);
+        println!("  Symbol ~ Symbol (similarity): {}", symbol_similarity);
         println!("  File → File: {}", file_to_file);
         println!("  Chunk → Chunk: {}", chunk_to_chunk);
 
@@ -2428,6 +2570,111 @@ impl ProjectGraph {
         kinds.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
         for (kind, count) in kinds {
             println!("  {}: {}", kind, count);
+        }
+    }
+
+    /// Print detailed community/subsystem analysis.
+    pub fn print_communities(&self) {
+        if self.communities.is_empty() {
+            println!("\n=== Semantic Communities ===");
+            println!("No communities detected (run with similarity analysis enabled).");
+            return;
+        }
+
+        println!("\n=== Semantic Communities (Subsystems) ===");
+        println!("Detected {} communities (modularity: {:.4})", self.communities.len(), self.modularity);
+        println!();
+
+        for (i, comm) in self.communities.iter().enumerate().take(10) {
+            let label = comm.suggested_label.as_deref().unwrap_or("unnamed");
+            println!(
+                "📦 Community {} [{}]: {} symbols, cohesion={:.3}",
+                i + 1,
+                label,
+                comm.symbol_names.len(),
+                comm.cohesion
+            );
+
+            // Show sample symbols (up to 8)
+            if !comm.symbol_names.is_empty() {
+                let sample: Vec<_> = comm.symbol_names.iter().take(8).collect();
+                print!("   └─ symbols: ");
+                for (j, sym) in sample.iter().enumerate() {
+                    if j > 0 {
+                        print!(", ");
+                    }
+                    print!("{}", sym);
+                }
+                if comm.symbol_names.len() > 8 {
+                    print!(" ... (+{})", comm.symbol_names.len() - 8);
+                }
+                println!();
+            }
+
+            // Show files
+            if !comm.files.is_empty() {
+                let file_list: Vec<_> = comm.files.iter().take(3).collect();
+                print!("   └─ files: ");
+                for (j, f) in file_list.iter().enumerate() {
+                    if j > 0 {
+                        print!(", ");
+                    }
+                    print!("{}", f);
+                }
+                if comm.files.len() > 3 {
+                    print!(" ... (+{})", comm.files.len() - 3);
+                }
+                println!();
+            }
+        }
+
+        if self.communities.len() > 10 {
+            println!("\n... and {} more communities", self.communities.len() - 10);
+        }
+
+        // Refactor suggestions
+        self.print_refactor_suggestions();
+    }
+
+    /// Print multi-file refactor suggestions based on community analysis.
+    fn print_refactor_suggestions(&self) {
+        println!("\n=== Refactor Suggestions ===");
+
+        // Find communities that span multiple files (potential module extraction)
+        let multi_file_comms: Vec<_> = self
+            .communities
+            .iter()
+            .filter(|c| c.files.len() > 1 && c.symbol_names.len() >= 3)
+            .take(5)
+            .collect();
+
+        if multi_file_comms.is_empty() {
+            println!("No obvious refactoring opportunities detected.");
+            return;
+        }
+
+        for (i, comm) in multi_file_comms.iter().enumerate() {
+            let label = comm.suggested_label.as_deref().unwrap_or("related");
+            println!(
+                "{}. Consider extracting '{}' module:",
+                i + 1,
+                label
+            );
+            println!(
+                "   {} related symbols spread across {} files (cohesion={:.2})",
+                comm.symbol_names.len(),
+                comm.files.len(),
+                comm.cohesion
+            );
+
+            // List the files
+            for f in comm.files.iter().take(4) {
+                println!("   - {}", f);
+            }
+            if comm.files.len() > 4 {
+                println!("   ... and {} more files", comm.files.len() - 4);
+            }
+            println!();
         }
     }
 }
