@@ -3,8 +3,8 @@
 // Detects coherent "subsystems" / "design units" from the symbol-similarity graph.
 // This is the open-source equivalent of Sourcegraph's paid module-grouping features.
 
-use std::collections::{HashMap, HashSet};
 use crate::nlp;
+use std::collections::{HashMap, HashSet};
 
 /// A weighted, undirected edge for the similarity graph.
 #[derive(Debug, Clone)]
@@ -16,18 +16,20 @@ pub struct SimilarityEdge {
 
 // Simple tokenization helpers and heuristics
 const STOPWORDS: [&str; 17] = [
-    "the", "and", "for", "with", "from", "into", "using", "use",
-    "you", "your", "need", "what", "full", "look", "file", "try", "convert"
+    "the", "and", "for", "with", "from", "into", "using", "use", "you", "your", "need", "what",
+    "full", "look", "file", "try", "convert",
 ];
 const VERB_BLACKLIST: [&str; 20] = [
-    "get", "set", "new", "parse", "handle", "list", "build", "compute", "create", "write",
-    "read", "load", "init", "process", "run", "generate", "add", "remove", "fetch", "call",
+    "get", "set", "new", "parse", "handle", "list", "build", "compute", "create", "write", "read",
+    "load", "init", "process", "run", "generate", "add", "remove", "fetch", "call",
 ];
 
 /// Check if a token is valid for label generation
 /// Filters out: too short, stopwords, verbs, purely numeric, mostly numeric
 fn is_valid_token(tok: &str) -> bool {
-    if tok.len() < 3 { return false; }
+    if tok.len() < 3 {
+        return false;
+    }
     let lower = tok.to_lowercase();
     if STOPWORDS.contains(&lower.as_str()) || VERB_BLACKLIST.contains(&lower.as_str()) {
         return false;
@@ -230,8 +232,10 @@ impl Louvain {
                 let mut best_delta = 0.0f64;
 
                 // Collect neighbor communities
-                let neighbor_comms: HashSet<usize> =
-                    self.adj[node].iter().map(|&(nb, _)| self.community[nb]).collect();
+                let neighbor_comms: HashSet<usize> = self.adj[node]
+                    .iter()
+                    .map(|&(nb, _)| self.community[nb])
+                    .collect();
 
                 for &target_comm in &neighbor_comms {
                     if target_comm == current_comm {
@@ -437,16 +441,24 @@ impl SemanticCommunity {
         // Compute centrality (sum similarity to other cluster members) and pick top-5 central chunks.
         let mut centrality: Vec<(usize, f32)> = Vec::new();
         for &i in indices {
-            if i >= embeddings.len() { continue; }
+            if i >= embeddings.len() {
+                continue;
+            }
             let mut sum = 0.0f32;
             for &j in indices {
-                if j >= embeddings.len() || i == j { continue; }
+                if j >= embeddings.len() || i == j {
+                    continue;
+                }
                 sum += cosine_similarity(&embeddings[i], &embeddings[j]);
             }
             centrality.push((i, sum));
         }
         centrality.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let top_k = centrality.iter().take(5).map(|(i, _)| *i).collect::<Vec<usize>>();
+        let top_k = centrality
+            .iter()
+            .take(5)
+            .map(|(i, _)| *i)
+            .collect::<Vec<usize>>();
 
         // Build a corpus of candidate phrases per chunk using comment/docs text + identifiers/symbols.
         fn extract_comment_text(text: &str) -> String {
@@ -455,7 +467,12 @@ impl SemanticCommunity {
             for line in text.lines() {
                 let t = line.trim_start();
                 if t.starts_with("///") || t.starts_with("//") || t.starts_with('#') {
-                    out.push(t.trim_start_matches('/').trim_start_matches('#').trim().to_string());
+                    out.push(
+                        t.trim_start_matches('/')
+                            .trim_start_matches('#')
+                            .trim()
+                            .to_string(),
+                    );
                 } else if t.starts_with("/*") {
                     in_block = true;
                     out.push(t.trim_start_matches("/*").trim().to_string());
@@ -474,19 +491,23 @@ impl SemanticCommunity {
         let mut doc_phrases: Vec<Vec<String>> = Vec::with_capacity(chunk_texts.len());
         for ci in 0..chunk_texts.len() {
             let mut phrases: Vec<String> = Vec::new();
-                if let Some(text) = chunk_texts.get(ci) {
+            if let Some(text) = chunk_texts.get(ci) {
                 let comments = extract_comment_text(text);
-                    // Extract noun phrases from COMMENTS ONLY, not raw chunk text
-                    // This avoids picking up prose like "You Need" or "What You" from markdown
-                    if !comments.is_empty() {
-                        for np in nlp::extract_noun_phrases(&comments) {
-                            let p = np.to_lowercase();
-                            if p.len() >= 3 { phrases.push(p); }
+                // Extract noun phrases from COMMENTS ONLY, not raw chunk text
+                // This avoids picking up prose like "You Need" or "What You" from markdown
+                if !comments.is_empty() {
+                    for np in nlp::extract_noun_phrases(&comments) {
+                        let p = np.to_lowercase();
+                        if p.len() >= 3 {
+                            phrases.push(p);
                         }
                     }
+                }
                 // tokenize comment words
                 for word in comments.split(|c: char| !c.is_alphanumeric() && c != '_' && c != ':') {
-                    if word.is_empty() { continue; }
+                    if word.is_empty() {
+                        continue;
+                    }
                     for tok in split_to_tokens(word) {
                         if is_valid_token(&tok) {
                             phrases.push(tok.to_lowercase());
@@ -561,7 +582,9 @@ impl SemanticCommunity {
                 }
             }
         }
-        if tf.is_empty() { return SemanticCommunity::infer_label(symbol_names); }
+        if tf.is_empty() {
+            return SemanticCommunity::infer_label(symbol_names);
+        }
 
         // TF-IDF scoring
         let mut scored: Vec<(String, f32)> = Vec::new();
@@ -575,37 +598,56 @@ impl SemanticCommunity {
         // Pick top 1-3 tokens (words/phrases) and title-case them
         let mut picks: Vec<String> = Vec::new();
         let mut seen_words: HashSet<String> = HashSet::new();
-        
-        for (p, _) in scored.iter().take(10) {  // Look at top 10 to find 3 unique
-            if p.len() < 3 { continue; }
+
+        for (p, _) in scored.iter().take(10) {
+            // Look at top 10 to find 3 unique
+            if p.len() < 3 {
+                continue;
+            }
             // Filter out purely numeric or mostly numeric tokens
             let digit_count = p.chars().filter(|c| c.is_numeric()).count();
             let alpha_count = p.chars().filter(|c| c.is_alphabetic()).count();
             // Reject if no letters, or if more than 50% digits
-            if alpha_count == 0 || (digit_count > alpha_count) { continue; }
-            
-            let nice = p.split_whitespace().map(|w| {
-                let mut chs = w.chars();
-                match chs.next() {
-                    Some(first) => first.to_uppercase().collect::<String>() + chs.as_str(),
-                    None => String::new(),
-                }
-            }).collect::<Vec<_>>().join(" ");
-            
+            if alpha_count == 0 || (digit_count > alpha_count) {
+                continue;
+            }
+
+            let nice = p
+                .split_whitespace()
+                .map(|w| {
+                    let mut chs = w.chars();
+                    match chs.next() {
+                        Some(first) => first.to_uppercase().collect::<String>() + chs.as_str(),
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+
             // Deduplicate: skip if we've already seen this exact word/phrase or its components
-            let words_in_phrase: Vec<String> = nice.to_lowercase().split_whitespace().map(|s| s.to_string()).collect();
+            let words_in_phrase: Vec<String> = nice
+                .to_lowercase()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
             let is_duplicate = words_in_phrase.iter().any(|w| seen_words.contains(w));
-            
+
             if !is_duplicate {
                 for w in words_in_phrase {
                     seen_words.insert(w);
                 }
                 picks.push(nice);
-                if picks.len() >= 3 { break; }
+                if picks.len() >= 3 {
+                    break;
+                }
             }
         }
-        if picks.is_empty() { return SemanticCommunity::infer_label(symbol_names); }
-        if picks.len() == 1 { return Some(picks[0].clone()); }
+        if picks.is_empty() {
+            return SemanticCommunity::infer_label(symbol_names);
+        }
+        if picks.len() == 1 {
+            return Some(picks[0].clone());
+        }
         Some(picks.into_iter().take(3).collect::<Vec<_>>().join(" + "))
     }
 
@@ -627,11 +669,7 @@ impl SemanticCommunity {
             }
         }
 
-        if count > 0 {
-            total / count as f32
-        } else {
-            0.0
-        }
+        if count > 0 { total / count as f32 } else { 0.0 }
     }
 }
 
@@ -645,15 +683,43 @@ mod tests {
         // Nodes 0,1,2 form one clique, nodes 3,4,5 form another
         let edges = vec![
             // Clique 1
-            SimilarityEdge { src: 0, dst: 1, weight: 0.9 },
-            SimilarityEdge { src: 0, dst: 2, weight: 0.9 },
-            SimilarityEdge { src: 1, dst: 2, weight: 0.9 },
+            SimilarityEdge {
+                src: 0,
+                dst: 1,
+                weight: 0.9,
+            },
+            SimilarityEdge {
+                src: 0,
+                dst: 2,
+                weight: 0.9,
+            },
+            SimilarityEdge {
+                src: 1,
+                dst: 2,
+                weight: 0.9,
+            },
             // Clique 2
-            SimilarityEdge { src: 3, dst: 4, weight: 0.9 },
-            SimilarityEdge { src: 3, dst: 5, weight: 0.9 },
-            SimilarityEdge { src: 4, dst: 5, weight: 0.9 },
+            SimilarityEdge {
+                src: 3,
+                dst: 4,
+                weight: 0.9,
+            },
+            SimilarityEdge {
+                src: 3,
+                dst: 5,
+                weight: 0.9,
+            },
+            SimilarityEdge {
+                src: 4,
+                dst: 5,
+                weight: 0.9,
+            },
             // Weak bridge
-            SimilarityEdge { src: 2, dst: 3, weight: 0.1 },
+            SimilarityEdge {
+                src: 2,
+                dst: 3,
+                weight: 0.1,
+            },
         ];
 
         let mut louvain = Louvain::new(6, &edges);

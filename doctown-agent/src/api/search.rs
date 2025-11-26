@@ -48,9 +48,9 @@ pub fn keyword_search(
 ) -> Result<SearchResponse> {
     let query_lower = query.query.to_lowercase();
     let limit = query.limit.unwrap_or(20);
-    
+
     let mut results: Vec<SearchResult> = Vec::new();
-    
+
     for (name, entry) in symbols.iter() {
         // Apply filters
         if let Some(ref subsystem_filter) = query.filter_subsystem {
@@ -58,17 +58,17 @@ pub fn keyword_search(
                 continue;
             }
         }
-        
+
         if let Some(ref kind_filter) = query.filter_kind {
             if &entry.kind != kind_filter {
                 continue;
             }
         }
-        
+
         // Simple scoring: match in name (higher) or summary (lower)
         let name_lower = name.to_lowercase();
         let summary_lower = entry.summary.to_lowercase();
-        
+
         let mut score = 0.0;
         if name_lower.contains(&query_lower) {
             score += 10.0;
@@ -76,12 +76,12 @@ pub fn keyword_search(
         if summary_lower.contains(&query_lower) {
             score += 5.0;
         }
-        
+
         // Check for exact matches
         if name_lower == query_lower {
             score += 20.0;
         }
-        
+
         if score > 0.0 {
             results.push(SearchResult {
                 symbol: name.clone(),
@@ -93,13 +93,17 @@ pub fn keyword_search(
             });
         }
     }
-    
+
     // Sort by score descending
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-    
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     let total = results.len();
     results.truncate(limit);
-    
+
     Ok(SearchResponse {
         results,
         total,
@@ -122,19 +126,20 @@ pub fn list_symbols(
     limit: Option<usize>,
 ) -> Result<Vec<String>> {
     let limit = limit.unwrap_or(100);
-    
+
     let mut names: Vec<String> = if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
-        symbols.keys()
+        symbols
+            .keys()
             .filter(|k| k.to_lowercase().contains(&pat_lower))
             .cloned()
             .collect()
     } else {
         symbols.keys().cloned().collect()
     };
-    
+
     names.sort();
     names.truncate(limit);
-    
+
     Ok(names)
 }

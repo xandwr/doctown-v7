@@ -1,15 +1,15 @@
 // api/mod.rs - Public API for doctown agent capabilities
 
-pub mod search;
+pub mod editor;
 pub mod graph;
+pub mod search;
 pub mod subsystems;
 pub mod tasks;
-pub mod editor;
 pub mod write;
 
-pub use search::*;
+pub use editor::*;
 pub use graph::*;
+pub use search::*;
 pub use subsystems::*;
 pub use tasks::*;
-pub use editor::*;
 pub use write::*;

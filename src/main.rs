@@ -2,16 +2,16 @@
 
 mod agent;
 mod community;
-mod nlp;
 mod docgen;
 mod docpack;
 mod embedding;
 mod ingest;
+mod nlp;
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use ingest::{code_file_stats, load_zip, unzip_to_memory_parallel};
 use std::collections::{HashMap, HashSet};
-use chrono::{DateTime, Utc};
 use std::time::Instant;
 
 /// Lightweight runtime execution report collector for `main`.
@@ -246,7 +246,11 @@ async fn main() -> Result<()> {
                     let inter: HashSet<_> = a.intersection(b).collect();
                     let min_size = usize::min(a.len(), b.len());
 
-                    let share = if min_size == 0 { 0.0 } else { inter.len() as f32 / min_size as f32 };
+                    let share = if min_size == 0 {
+                        0.0
+                    } else {
+                        inter.len() as f32 / min_size as f32
+                    };
 
                     if share >= threshold {
                         block.push(j);
@@ -294,9 +298,15 @@ async fn main() -> Result<()> {
                 }
                 let mut freq_vec: Vec<_> = freq.into_iter().collect();
                 freq_vec.sort_by(|a, b| b.1.cmp(&a.1));
-                let repr_syms: Vec<String> = freq_vec.iter().take(6).map(|(s, _)| s.clone()).collect();
+                let repr_syms: Vec<String> =
+                    freq_vec.iter().take(6).map(|(s, _)| s.clone()).collect();
 
-                println!("     {}. Unit ({} chunk(s)) — repr: {}", bi + 1, block.len(), repr_name);
+                println!(
+                    "     {}. Unit ({} chunk(s)) — repr: {}",
+                    bi + 1,
+                    block.len(),
+                    repr_name
+                );
                 if !repr_syms.is_empty() {
                     println!("        └─ composed of symbols: {}", repr_syms.join(", "));
                 } else if !union_syms.is_empty() {
@@ -320,18 +330,31 @@ async fn main() -> Result<()> {
                 // Show up to 8 symbols
                 let mut shown = 0usize;
                 for (sym, locations) in sym_to_chunks.iter() {
-                    if shown >= 8 { break; }
+                    if shown >= 8 {
+                        break;
+                    }
                     shown += 1;
-                    let locs_str: Vec<String> = locations.iter().map(|idx| pf.chunks[*idx].id.0.clone()).collect();
+                    let locs_str: Vec<String> = locations
+                        .iter()
+                        .map(|idx| pf.chunks[*idx].id.0.clone())
+                        .collect();
                     print!("           • {} — in {} chunk(s)", sym, locations.len());
                     if !locs_str.is_empty() {
-                        print!(": {}", locs_str.into_iter().take(3).collect::<Vec<_>>().join(", "));
-                        if locations.len() > 3 { print!(" (+{} more)", locations.len() - 3); }
+                        print!(
+                            ": {}",
+                            locs_str.into_iter().take(3).collect::<Vec<_>>().join(", ")
+                        );
+                        if locations.len() > 3 {
+                            print!(" (+{} more)", locations.len() - 3);
+                        }
                     }
                     println!("");
                 }
                 if sym_to_chunks.len() > 8 {
-                    println!("           ... and {} more symbols", sym_to_chunks.len() - 8);
+                    println!(
+                        "           ... and {} more symbols",
+                        sym_to_chunks.len() - 8
+                    );
                 }
             }
             println!();
@@ -411,7 +434,7 @@ async fn main() -> Result<()> {
     // Recompute chunk -> community mapping so we can merge semantic blocks by cluster
     // Build similarity edges and run Louvain locally to get chunk indices -> community id
     {
-        use community::{build_similarity_edges, Louvain};
+        use community::{Louvain, build_similarity_edges};
         let n_chunks = graph.chunk_embeddings.len();
         if n_chunks > 0 {
             let sim_edges = build_similarity_edges(&graph.chunk_embeddings, 0.5);
@@ -472,7 +495,11 @@ async fn main() -> Result<()> {
                         let b = &chunk_symbol_sets[j];
                         let inter: HashSet<_> = a.intersection(b).collect();
                         let min_size = usize::min(a.len(), b.len());
-                        let share = if min_size == 0 { 0.0 } else { inter.len() as f32 / min_size as f32 };
+                        let share = if min_size == 0 {
+                            0.0
+                        } else {
+                            inter.len() as f32 / min_size as f32
+                        };
                         if share >= 0.6 {
                             block.push(j);
                             j += 1;
@@ -522,8 +549,12 @@ async fn main() -> Result<()> {
                             cnt += 1;
                         }
                     }
-                    if cnt == 0 { return None; }
-                    for d in cent.iter_mut() { *d /= cnt as f32; }
+                    if cnt == 0 {
+                        return None;
+                    }
+                    for d in cent.iter_mut() {
+                        *d /= cnt as f32;
+                    }
                     Some(cent)
                 };
 
@@ -578,7 +609,11 @@ async fn main() -> Result<()> {
                         let u_right = union_symbols(right);
                         let inter_count = u_left.intersection(&u_right).count();
                         let min_sz = usize::min(u_left.len(), u_right.len());
-                        let share = if min_sz == 0 { 0.0 } else { inter_count as f32 / min_sz as f32 };
+                        let share = if min_sz == 0 {
+                            0.0
+                        } else {
+                            inter_count as f32 / min_sz as f32
+                        };
 
                         // Asymmetric thresholds depending on scope
                         // Determine if chunks share same parent container (e.g., same function/impl)
@@ -599,7 +634,8 @@ async fn main() -> Result<()> {
 
                         // Condition: centroid similarity >= threshold depending on scope
                         let mut centroid_sim_ok = false;
-                        if let (Some(lc), Some(rc)) = (block_centroid(left), block_centroid(right)) {
+                        if let (Some(lc), Some(rc)) = (block_centroid(left), block_centroid(right))
+                        {
                             let sim = community::cosine_similarity(&lc, &rc);
                             // if chunks map to global indices in different files, use cross-file threshold
                             let cross_file = left_global.iter().any(|lg| {
@@ -607,7 +643,11 @@ async fn main() -> Result<()> {
                                     graph.chunk_to_file.get(lg) != graph.chunk_to_file.get(rg)
                                 })
                             });
-                            let use_thresh = if cross_file { cross_file_threshold } else { threshold };
+                            let use_thresh = if cross_file {
+                                cross_file_threshold
+                            } else {
+                                threshold
+                            };
                             if sim >= use_thresh {
                                 centroid_sim_ok = true;
                             }
@@ -623,10 +663,16 @@ async fn main() -> Result<()> {
                         'edgecheck: for &lg in &left_global {
                             for &rg in &right_global {
                                 for e in &graph.edges {
-                                    if (e.src == graph.chunks[lg].id.0 && e.dst == graph.chunks[rg].id.0)
-                                        || (e.dst == graph.chunks[lg].id.0 && e.src == graph.chunks[rg].id.0)
+                                    if (e.src == graph.chunks[lg].id.0
+                                        && e.dst == graph.chunks[rg].id.0)
+                                        || (e.dst == graph.chunks[lg].id.0
+                                            && e.src == graph.chunks[rg].id.0)
                                     {
-                                        if matches!(e.kind, ingest::GraphEdgeKind::ChunkToChunk | ingest::GraphEdgeKind::SymbolSimilarity) {
+                                        if matches!(
+                                            e.kind,
+                                            ingest::GraphEdgeKind::ChunkToChunk
+                                                | ingest::GraphEdgeKind::SymbolSimilarity
+                                        ) {
                                             structural_link = true;
                                             break 'edgecheck;
                                         }
@@ -640,14 +686,20 @@ async fn main() -> Result<()> {
                             let left_kind = left_first.split("::").next().unwrap_or("");
                             let right_kind = right_first.split("::").next().unwrap_or("");
                             let top_kinds = ["mod", "struct", "enum", "fn", "trait", "impl"];
-                            top_kinds.contains(&left_kind) && top_kinds.contains(&right_kind) && left_kind != right_kind
+                            top_kinds.contains(&left_kind)
+                                && top_kinds.contains(&right_kind)
+                                && left_kind != right_kind
                         };
 
                         // Merge allowed only if one of the conditions true AND (>=3 shared symbols or structural link)
-                        let raw_condition = same_cluster || (share >= 0.5) || centroid_sim_ok || kinds_identical;
+                        let raw_condition =
+                            same_cluster || (share >= 0.5) || centroid_sim_ok || kinds_identical;
                         let share_count_ok = inter_count >= 3;
 
-                        if !forbid_merge_due_to_boundary && raw_condition && (share_count_ok || structural_link) {
+                        if !forbid_merge_due_to_boundary
+                            && raw_condition
+                            && (share_count_ok || structural_link)
+                        {
                             // Merge into one block
                             let mut merged_block = left.clone();
                             merged_block.extend(right.iter());
@@ -670,8 +722,16 @@ async fn main() -> Result<()> {
                     let first_chunk = &pf.chunks[block[0]].id.0;
                     let repr_name = if let Some(pos) = first_chunk.find("::") {
                         let after = &first_chunk[pos + 2..];
-                        if let Some(colpos) = after.find(':') { &after[..colpos] } else { &first_chunk[..pos] }
-                    } else if let Some(pos) = first_chunk.find(':') { &first_chunk[..pos] } else { &first_chunk };
+                        if let Some(colpos) = after.find(':') {
+                            &after[..colpos]
+                        } else {
+                            &first_chunk[..pos]
+                        }
+                    } else if let Some(pos) = first_chunk.find(':') {
+                        &first_chunk[..pos]
+                    } else {
+                        &first_chunk
+                    };
 
                     // representative symbols
                     let mut freq: HashMap<String, usize> = HashMap::new();
@@ -682,9 +742,15 @@ async fn main() -> Result<()> {
                     }
                     let mut freq_vec: Vec<_> = freq.into_iter().collect();
                     freq_vec.sort_by(|a, b| b.1.cmp(&a.1));
-                    let repr_syms: Vec<String> = freq_vec.iter().take(6).map(|(s, _)| s.clone()).collect();
+                    let repr_syms: Vec<String> =
+                        freq_vec.iter().take(6).map(|(s, _)| s.clone()).collect();
 
-                    println!("     {}. Unit ({} chunk(s)) — repr: {}", bi + 1, block.len(), repr_name);
+                    println!(
+                        "     {}. Unit ({} chunk(s)) — repr: {}",
+                        bi + 1,
+                        block.len(),
+                        repr_name
+                    );
                     if !repr_syms.is_empty() {
                         println!("        └─ composed of symbols: {}", repr_syms.join(", "));
                     } else {

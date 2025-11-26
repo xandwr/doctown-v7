@@ -35,22 +35,20 @@ pub fn list_subsystems(
     agent_index: &doctown::docpack::AgentIndex,
 ) -> Result<SubsystemResponse> {
     let min_conf = query.min_confidence.unwrap_or(0.0);
-    
-    let mut subsystems: Vec<doctown::docpack::Subsystem> = agent_index.subsystems
+
+    let mut subsystems: Vec<doctown::docpack::Subsystem> = agent_index
+        .subsystems
         .iter()
         .filter(|s| {
-            s.confidence >= min_conf &&
-            (query.name.is_none() || s.name.contains(query.name.as_ref().unwrap()))
+            s.confidence >= min_conf
+                && (query.name.is_none() || s.name.contains(query.name.as_ref().unwrap()))
         })
         .cloned()
         .collect();
-    
+
     let total = subsystems.len();
-    
-    Ok(SubsystemResponse {
-        subsystems,
-        total,
-    })
+
+    Ok(SubsystemResponse { subsystems, total })
 }
 
 /// Get detailed information about a specific subsystem
@@ -58,14 +56,15 @@ pub fn get_subsystem_detail(
     name: &str,
     agent_index: &doctown::docpack::AgentIndex,
 ) -> Result<Option<SubsystemDetail>> {
-    let subsystem = agent_index.subsystems
+    let subsystem = agent_index
+        .subsystems
         .iter()
         .find(|s| s.name == name)
         .cloned();
-    
+
     if let Some(sub) = subsystem {
         let mut symbol_details = Vec::new();
-        
+
         for symbol_name in &sub.symbols {
             if let Some(entry) = agent_index.symbols.get(symbol_name) {
                 symbol_details.push(SymbolInfo {
@@ -76,7 +75,7 @@ pub fn get_subsystem_detail(
                 });
             }
         }
-        
+
         Ok(Some(SubsystemDetail {
             subsystem: sub,
             symbol_details,
@@ -91,12 +90,13 @@ pub fn get_subsystems_by_file(
     file_path: &str,
     agent_index: &doctown::docpack::AgentIndex,
 ) -> Result<Vec<doctown::docpack::Subsystem>> {
-    let subsystems = agent_index.subsystems
+    let subsystems = agent_index
+        .subsystems
         .iter()
         .filter(|s| s.files.contains(&file_path.to_string()))
         .cloned()
         .collect();
-    
+
     Ok(subsystems)
 }
 

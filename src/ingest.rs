@@ -2365,7 +2365,7 @@ async fn load_zip_from_url(url: Url) -> Result<Vec<u8>> {
     Ok(res.bytes().await?.to_vec())
 }
 
-use crate::community::{build_similarity_edges, Louvain, SemanticCommunity};
+use crate::community::{Louvain, SemanticCommunity, build_similarity_edges};
 
 /// A semantic community detected in the codebase.
 #[derive(Debug, Clone)]
@@ -2554,7 +2554,8 @@ impl ProjectGraph {
         }
 
         // Sort communities by size (largest first)
-        self.communities.sort_by(|a, b| b.symbol_names.len().cmp(&a.symbol_names.len()));
+        self.communities
+            .sort_by(|a, b| b.symbol_names.len().cmp(&a.symbol_names.len()));
     }
 
     /// Print a summary of the graph structure
@@ -2612,7 +2613,11 @@ impl ProjectGraph {
         }
 
         println!("\n=== Semantic Communities (Subsystems) ===");
-        println!("Detected {} communities (modularity: {:.4})", self.communities.len(), self.modularity);
+        println!(
+            "Detected {} communities (modularity: {:.4})",
+            self.communities.len(),
+            self.modularity
+        );
         println!();
 
         for (i, comm) in self.communities.iter().enumerate().take(10) {
@@ -2685,11 +2690,7 @@ impl ProjectGraph {
 
         for (i, comm) in multi_file_comms.iter().enumerate() {
             let label = comm.suggested_label.as_deref().unwrap_or("related");
-            println!(
-                "{}. Consider extracting '{}' module:",
-                i + 1,
-                label
-            );
+            println!("{}. Consider extracting '{}' module:", i + 1, label);
             println!(
                 "   {} related symbols spread across {} files (cohesion={:.2})",
                 comm.symbol_names.len(),

@@ -7,18 +7,16 @@ pub fn extract_noun_phrases(text: &str) -> Vec<String> {
 
     // Common determiners, prepositions, and other non-noun words to filter
     let stop_words: HashSet<&str> = [
-        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "should",
-        "could", "may", "might", "must", "can", "to", "of", "in", "for", "on",
-        "at", "by", "with", "from", "as", "into", "through", "during", "before",
-        "after", "above", "below", "between", "under", "again", "further", "then",
-        "once", "here", "there", "when", "where", "why", "how", "all", "both",
-        "each", "few", "more", "most", "other", "some", "such", "no", "nor",
-        "not", "only", "own", "same", "so", "than", "too", "very", "s", "t",
-        "just", "don", "now", "d", "ll", "m", "o", "re", "ve", "y", "ain",
-        "aren", "couldn", "didn", "doesn", "hadn", "hasn", "haven", "isn",
-        "ma", "mightn", "mustn", "needn", "shan", "shouldn", "wasn", "weren",
-        "won", "wouldn", "what", "you", "need", "finding", "full", "show",
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "should", "could", "may", "might", "must", "can",
+        "to", "of", "in", "for", "on", "at", "by", "with", "from", "as", "into", "through",
+        "during", "before", "after", "above", "below", "between", "under", "again", "further",
+        "then", "once", "here", "there", "when", "where", "why", "how", "all", "both", "each",
+        "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same",
+        "so", "than", "too", "very", "s", "t", "just", "don", "now", "d", "ll", "m", "o", "re",
+        "ve", "y", "ain", "aren", "couldn", "didn", "doesn", "hadn", "hasn", "haven", "isn", "ma",
+        "mightn", "mustn", "needn", "shan", "shouldn", "wasn", "weren", "won", "wouldn", "what",
+        "you", "need", "finding", "full", "show",
     ]
     .iter()
     .cloned()
@@ -26,17 +24,14 @@ pub fn extract_noun_phrases(text: &str) -> Vec<String> {
 
     // Tokenize into words (keeping alphanumeric and underscores)
     let word_regex = Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*\b").unwrap();
-    let tokens: Vec<&str> = word_regex
-        .find_iter(text)
-        .map(|m| m.as_str())
-        .collect();
+    let tokens: Vec<&str> = word_regex.find_iter(text).map(|m| m.as_str()).collect();
 
     let mut noun_phrases = Vec::new();
     let mut current_phrase = Vec::new();
 
     for token in tokens {
         let lower = token.to_lowercase();
-        
+
         // Check if it's a stop word or too short
         if stop_words.contains(lower.as_str()) || token.len() < 2 {
             if !current_phrase.is_empty() {

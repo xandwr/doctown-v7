@@ -3,7 +3,7 @@
 // These tools enable safe, structured modifications to code through MCP.
 // All operations return proposed changes that can be reviewed before application.
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -11,8 +11,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyPatchRequest {
     pub file_path: String,
-    pub patch: String,  // unified diff format
-    pub validate: Option<bool>,  // whether to validate syntax after applying
+    pub patch: String,          // unified diff format
+    pub validate: Option<bool>, // whether to validate syntax after applying
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,7 +79,7 @@ pub struct ImpactAnalysis {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateSymbolDocsRequest {
     pub symbol: String,
-    pub style: Option<String>,  // "rustdoc", "jsdoc", "pydoc", etc.
+    pub style: Option<String>, // "rustdoc", "jsdoc", "pydoc", etc.
     pub include_examples: Option<bool>,
 }
 
@@ -141,7 +141,7 @@ pub struct UpdateFileSectionResponse {
 pub struct CreateTestRequest {
     pub symbol: String,
     pub test_type: TestType,
-    pub coverage_focus: Option<Vec<String>>,  // specific scenarios to test
+    pub coverage_focus: Option<Vec<String>>, // specific scenarios to test
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,22 +195,23 @@ pub fn apply_patch(
 ) -> Result<ApplyPatchResponse> {
     // Read the original file
     let file_path = format!("source/{}", request.file_path.trim_start_matches('/'));
-    let mut file = archive.by_name(&file_path)
+    let mut file = archive
+        .by_name(&file_path)
         .context(format!("File not found: {}", request.file_path))?;
-    
+
     let mut original_content = String::new();
     std::io::Read::read_to_string(&mut file, &mut original_content)?;
-    
+
     // Parse and apply the patch
     let (modified_content, changes) = parse_and_apply_patch(&original_content, &request.patch)?;
-    
+
     // Validate if requested
     let validation = if request.validate.unwrap_or(false) {
         Some(validate_content(&modified_content, &request.file_path)?)
     } else {
         None
     };
-    
+
     Ok(ApplyPatchResponse {
         success: validation.as_ref().map(|v| v.valid).unwrap_or(true),
         file_path: request.file_path.clone(),
@@ -227,22 +228,21 @@ pub fn propose_refactor(
     _archive: &mut zip::ZipArchive<std::fs::File>,
 ) -> Result<ProposeRefactorResponse> {
     // Find the symbol
-    let symbol_entry = symbols.get(&request.symbol)
+    let symbol_entry = symbols
+        .get(&request.symbol)
         .ok_or_else(|| anyhow::anyhow!("Symbol not found: {}", request.symbol))?;
-    
+
     // Analyze impact using the dependency graph
     let impact = analyze_refactor_impact(&request.symbol, graph, symbols)?;
-    
+
     // Generate the proposed changes based on refactor type
     let changes = generate_refactor_changes(request, symbol_entry, symbols, _archive)?;
-    
+
     // Calculate confidence based on complexity and impact
     let confidence = calculate_refactor_confidence(&changes, &impact);
-    
-    let affected_files: Vec<String> = changes.iter()
-        .map(|c| c.file_path.clone())
-        .collect();
-    
+
+    let affected_files: Vec<String> = changes.iter().map(|c| c.file_path.clone()).collect();
+
     Ok(ProposeRefactorResponse {
         symbol: request.symbol.clone(),
         refactor_type: request.refactor_type.clone(),
@@ -261,19 +261,20 @@ pub fn generate_symbol_docs(
     _archive: &mut zip::ZipArchive<std::fs::File>,
 ) -> Result<GenerateSymbolDocsResponse> {
     // Find the symbol
-    let symbol_entry = symbols.get(&request.symbol)
+    let symbol_entry = symbols
+        .get(&request.symbol)
         .ok_or_else(|| anyhow::anyhow!("Symbol not found: {}", request.symbol))?;
-    
+
     // Get the symbol's context from chunks
     let context = gather_symbol_context(symbol_entry, chunks, symbols)?;
-    
+
     // Generate documentation based on style
     let style = request.style.as_deref().unwrap_or("rustdoc");
     let documentation = generate_docs(&context, style, request.include_examples.unwrap_or(true))?;
-    
+
     // Determine position for insertion
     let position = calculate_doc_position(symbol_entry)?;
-    
+
     Ok(GenerateSymbolDocsResponse {
         symbol: request.symbol.clone(),
         file_path: symbol_entry.file.clone(),
@@ -290,10 +291,11 @@ pub fn rewrite_chunk(
     symbols: &HashMap<String, doctown::docpack::SymbolEntry>,
 ) -> Result<RewriteChunkResponse> {
     // Find the chunk
-    let chunk = chunks.iter()
+    let chunk = chunks
+        .iter()
         .find(|c| c.chunk_id == request.chunk_id)
         .ok_or_else(|| anyhow::anyhow!("Chunk not found: {}", request.chunk_id))?;
-    
+
     // Analyze the chunk and generate improved version
     let (rewritten, rationale) = generate_improved_chunk(
         &chunk.text,
@@ -301,10 +303,10 @@ pub fn rewrite_chunk(
         request.preserve_interface.unwrap_or(true),
         symbols,
     )?;
-    
+
     // Validate the rewritten code
     let validation = validate_content(&rewritten, &chunk.file_path)?;
-    
+
     Ok(RewriteChunkResponse {
         chunk_id: request.chunk_id.clone(),
         file_path: chunk.file_path.clone(),
@@ -322,28 +324,29 @@ pub fn update_file_section(
 ) -> Result<UpdateFileSectionResponse> {
     // Read the original file
     let file_path = format!("source/{}", request.file_path.trim_start_matches('/'));
-    let mut file = archive.by_name(&file_path)
+    let mut file = archive
+        .by_name(&file_path)
         .context(format!("File not found: {}", request.file_path))?;
-    
+
     let mut original_content = String::new();
     std::io::Read::read_to_string(&mut file, &mut original_content)?;
-    
+
     // Extract the section being replaced
     let lines: Vec<&str> = original_content.lines().collect();
     let original_section = lines[(request.start_line - 1)..request.end_line].join("\n");
-    
+
     // Apply formatting if requested
     let new_content = if request.preserve_formatting.unwrap_or(true) {
         preserve_indentation(&original_section, &request.new_content)
     } else {
         request.new_content.clone()
     };
-    
+
     // Validate the new content
     let validation = validate_content(&new_content, &request.file_path)?;
-    
+
     let lines_affected = request.end_line - request.start_line + 1;
-    
+
     Ok(UpdateFileSectionResponse {
         file_path: request.file_path.clone(),
         lines_affected,
@@ -361,28 +364,29 @@ pub fn create_test_for_symbol(
     _archive: &mut zip::ZipArchive<std::fs::File>,
 ) -> Result<CreateTestResponse> {
     // Find the symbol
-    let symbol_entry = symbols.get(&request.symbol)
+    let symbol_entry = symbols
+        .get(&request.symbol)
         .ok_or_else(|| anyhow::anyhow!("Symbol not found: {}", request.symbol))?;
-    
+
     // Gather context about the symbol
     let context = gather_symbol_context(symbol_entry, chunks, symbols)?;
-    
+
     // Generate test cases based on symbol type and coverage focus
     let test_cases = generate_test_cases(
         &context,
         &request.test_type,
         request.coverage_focus.as_ref(),
     )?;
-    
+
     // Generate test code
     let test_code = generate_test_code(&request.symbol, &test_cases, &request.test_type)?;
-    
+
     // Determine test file path
     let test_file_path = derive_test_path(&symbol_entry.file, &request.test_type)?;
-    
+
     // Identify setup requirements
     let setup_required = identify_test_setup(&context, &test_cases)?;
-    
+
     Ok(CreateTestResponse {
         symbol: request.symbol.clone(),
         test_code,
@@ -406,46 +410,58 @@ struct SymbolContext {
 fn parse_and_apply_patch(original: &str, patch: &str) -> Result<(String, PatchChanges)> {
     // Simple patch parser - in production, use a proper diff library
     // This is a stub implementation that just returns the original for now
-    
+
     let hunks_applied = patch.lines().filter(|l| l.starts_with("@@")).count();
-    let lines_added = patch.lines().filter(|l| l.starts_with("+") && !l.starts_with("+++")).count();
-    let lines_removed = patch.lines().filter(|l| l.starts_with("-") && !l.starts_with("---")).count();
-    
+    let lines_added = patch
+        .lines()
+        .filter(|l| l.starts_with("+") && !l.starts_with("+++"))
+        .count();
+    let lines_removed = patch
+        .lines()
+        .filter(|l| l.starts_with("-") && !l.starts_with("---"))
+        .count();
+
     // TODO: Actually apply the patch - for now just return original
     let modified = original.to_string();
-    
-    Ok((modified, PatchChanges {
-        lines_added,
-        lines_removed,
-        hunks_applied,
-    }))
+
+    Ok((
+        modified,
+        PatchChanges {
+            lines_added,
+            lines_removed,
+            hunks_applied,
+        },
+    ))
 }
 
 fn validate_content(content: &str, _file_path: &str) -> Result<ValidationResult> {
     // Basic syntax validation - in production, integrate with language-specific parsers
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
-    
+
     // Check for common syntax issues
     if content.is_empty() {
         warnings.push("File content is empty".to_string());
     }
-    
+
     // Check for unbalanced braces (simple heuristic)
     let open_braces = content.chars().filter(|&c| c == '{').count();
     let close_braces = content.chars().filter(|&c| c == '}').count();
-    
+
     if open_braces != close_braces {
         errors.push(ValidationError {
             line: 0,
             column: 0,
-            message: format!("Unbalanced braces: {} open, {} close", open_braces, close_braces),
+            message: format!(
+                "Unbalanced braces: {} open, {} close",
+                open_braces, close_braces
+            ),
             severity: "error".to_string(),
         });
     }
-    
+
     let valid = errors.is_empty();
-    
+
     Ok(ValidationResult {
         valid,
         errors,
@@ -461,12 +477,12 @@ fn analyze_refactor_impact(
     // Find all edges involving this symbol
     let mut symbols_affected = std::collections::HashSet::new();
     let mut files_affected = std::collections::HashSet::new();
-    
+
     for edge in &graph.edges {
         if edge.from == symbol || edge.to == symbol {
             symbols_affected.insert(edge.from.clone());
             symbols_affected.insert(edge.to.clone());
-            
+
             if let Some(entry) = symbols.get(&edge.from) {
                 files_affected.insert(entry.file.clone());
             }
@@ -475,12 +491,12 @@ fn analyze_refactor_impact(
             }
         }
     }
-    
+
     Ok(ImpactAnalysis {
         symbols_affected: symbols_affected.len(),
         files_affected: files_affected.len(),
-        dependencies_broken: Vec::new(),  // TODO: Implement dependency analysis
-        tests_to_update: Vec::new(),  // TODO: Identify related tests
+        dependencies_broken: Vec::new(), // TODO: Implement dependency analysis
+        tests_to_update: Vec::new(),     // TODO: Identify related tests
     })
 }
 
@@ -492,7 +508,7 @@ fn generate_refactor_changes(
 ) -> Result<Vec<FileChange>> {
     // Generate changes based on refactor type
     let mut changes = Vec::new();
-    
+
     match request.refactor_type {
         RefactorType::RenameSymbol => {
             if let Some(new_name) = request.options.get("new_name") {
@@ -517,7 +533,7 @@ fn generate_refactor_changes(
             // Stub for other refactor types
         }
     }
-    
+
     Ok(changes)
 }
 
@@ -527,7 +543,7 @@ fn calculate_refactor_confidence(changes: &[FileChange], impact: &ImpactAnalysis
     let file_penalty = 0.05 * (impact.files_affected as f32).min(10.0);
     let symbol_penalty = 0.02 * (impact.symbols_affected as f32).min(20.0);
     let change_penalty = 0.03 * (changes.len() as f32).min(10.0);
-    
+
     (base - file_penalty - symbol_penalty - change_penalty).max(0.1)
 }
 
@@ -537,24 +553,29 @@ fn gather_symbol_context(
     symbols: &HashMap<String, doctown::docpack::SymbolEntry>,
 ) -> Result<SymbolContext> {
     // Find chunks containing this symbol
-    let related_chunks: Vec<_> = chunks.iter()
+    let related_chunks: Vec<_> = chunks
+        .iter()
         .filter(|c| c.file_path == symbol_entry.file)
         .collect();
-    
+
     // Extract signature and body
-    let signature = symbol_entry.signature.clone()
+    let signature = symbol_entry
+        .signature
+        .clone()
         .unwrap_or_else(|| "unknown signature".to_string());
-    let body = related_chunks.first()
+    let body = related_chunks
+        .first()
         .map(|c| c.text.clone())
         .unwrap_or_default();
-    
+
     // Find dependencies from symbols in the same file
-    let dependencies: Vec<String> = symbols.iter()
+    let dependencies: Vec<String> = symbols
+        .iter()
         .filter(|(_, s)| s.file == symbol_entry.file)
         .map(|(name, _)| name.clone())
         .take(5)
         .collect();
-    
+
     Ok(SymbolContext {
         signature,
         body,
@@ -566,13 +587,13 @@ fn gather_symbol_context(
 
 fn generate_docs(_context: &SymbolContext, style: &str, include_examples: bool) -> Result<String> {
     let mut doc = String::new();
-    
+
     match style {
         "rustdoc" => {
             doc.push_str("/// ");
             doc.push_str("TODO: Add description\n");
             doc.push_str("///\n");
-            
+
             if include_examples {
                 doc.push_str("/// # Examples\n");
                 doc.push_str("///\n");
@@ -585,14 +606,16 @@ fn generate_docs(_context: &SymbolContext, style: &str, include_examples: bool) 
             doc.push_str("// TODO: Add documentation\n");
         }
     }
-    
+
     Ok(doc)
 }
 
-fn calculate_doc_position(_symbol_entry: &doctown::docpack::SymbolEntry) -> Result<DocumentPosition> {
+fn calculate_doc_position(
+    _symbol_entry: &doctown::docpack::SymbolEntry,
+) -> Result<DocumentPosition> {
     // Simplified - should parse file to find exact position
     Ok(DocumentPosition {
-        line: 1,  // TODO: Parse to find actual line
+        line: 1, // TODO: Parse to find actual line
         column: 0,
         insert_before: true,
     })
@@ -607,18 +630,20 @@ fn generate_improved_chunk(
     // Stub: In production, this would use AI/rules to improve code
     let rewritten = format!("// Rewritten based on: {}\n{}", instructions, original);
     let rationale = format!("Applied instructions: {}", instructions);
-    
+
     Ok((rewritten, rationale))
 }
 
 fn preserve_indentation(original: &str, new_content: &str) -> String {
     // Extract indentation from original
-    let indent = original.chars()
+    let indent = original
+        .chars()
         .take_while(|&c| c == ' ' || c == '\t')
         .collect::<String>();
-    
+
     // Apply to new content
-    new_content.lines()
+    new_content
+        .lines()
         .map(|line| format!("{}{}", indent, line))
         .collect::<Vec<_>>()
         .join("\n")
@@ -630,7 +655,7 @@ fn generate_test_cases(
     coverage_focus: Option<&Vec<String>>,
 ) -> Result<Vec<TestCase>> {
     let mut cases = Vec::new();
-    
+
     match test_type {
         TestType::Unit => {
             cases.push(TestCase {
@@ -655,22 +680,22 @@ fn generate_test_cases(
             // Other test types
         }
     }
-    
+
     // Filter by coverage focus if provided
     if let Some(focus) = coverage_focus {
         cases.retain(|case| focus.iter().any(|f| case.name.contains(f)));
     }
-    
+
     Ok(cases)
 }
 
 fn generate_test_code(symbol: &str, cases: &[TestCase], _test_type: &TestType) -> Result<String> {
     let mut code = String::new();
-    
+
     code.push_str("#[cfg(test)]\n");
     code.push_str("mod tests {\n");
     code.push_str("    use super::*;\n\n");
-    
+
     for case in cases {
         code.push_str(&format!("    #[test]\n"));
         code.push_str(&format!("    fn {}() {{\n", case.name));
@@ -679,9 +704,9 @@ fn generate_test_code(symbol: &str, cases: &[TestCase], _test_type: &TestType) -
         code.push_str("        assert!(true);\n");
         code.push_str("    }\n\n");
     }
-    
+
     code.push_str("}\n");
-    
+
     Ok(code)
 }
 
@@ -689,7 +714,7 @@ fn derive_test_path(source_path: &str, test_type: &TestType) -> Result<String> {
     let path_parts: Vec<&str> = source_path.split('/').collect();
     let filename = path_parts.last().unwrap_or(&"unknown.rs");
     let name_without_ext = filename.trim_end_matches(".rs");
-    
+
     match test_type {
         TestType::Unit => Ok(format!("{}_test.rs", name_without_ext)),
         TestType::Integration => Ok(format!("tests/{}_integration.rs", name_without_ext)),
@@ -699,16 +724,16 @@ fn derive_test_path(source_path: &str, test_type: &TestType) -> Result<String> {
 
 fn identify_test_setup(context: &SymbolContext, _cases: &[TestCase]) -> Result<Vec<String>> {
     let mut setup = Vec::new();
-    
+
     // Check if mocking is needed
     if !context.dependencies.is_empty() {
         setup.push("Mock dependencies".to_string());
     }
-    
+
     // Check if test data is needed
     if context.body.contains("File") || context.body.contains("read") {
         setup.push("Test fixtures/data files".to_string());
     }
-    
+
     Ok(setup)
 }

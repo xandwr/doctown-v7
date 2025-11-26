@@ -27,9 +27,7 @@ pub struct QuickstartResponse {
 }
 
 /// Get the quickstart guide for navigating the codebase
-pub fn get_quickstart(
-    agent_index: &doctown::docpack::AgentIndex,
-) -> Result<QuickstartResponse> {
+pub fn get_quickstart(agent_index: &doctown::docpack::AgentIndex) -> Result<QuickstartResponse> {
     Ok(QuickstartResponse {
         entry_points: agent_index.quickstart.entry_points.clone(),
         core_types: agent_index.quickstart.core_types.clone(),
@@ -52,25 +50,29 @@ pub fn get_task_view(
             related_files: vec![],
         });
     }
-    
+
     // Otherwise, try to construct a task view based on context
     let relevant = if let Some(context) = &query.context {
         // Simple keyword matching for now
         let context_lower = context.to_lowercase();
-        agent_index.symbols.keys()
+        agent_index
+            .symbols
+            .keys()
             .filter(|s| {
                 let s_lower = s.to_lowercase();
-                s_lower.contains(&context_lower) || 
-                agent_index.symbols.get(*s)
-                    .map(|e| e.summary.to_lowercase().contains(&context_lower))
-                    .unwrap_or(false)
+                s_lower.contains(&context_lower)
+                    || agent_index
+                        .symbols
+                        .get(*s)
+                        .map(|e| e.summary.to_lowercase().contains(&context_lower))
+                        .unwrap_or(false)
             })
             .cloned()
             .collect()
     } else {
         vec![]
     };
-    
+
     Ok(TaskResponse {
         task_type: query.task_type.clone(),
         relevant_symbols: relevant,
@@ -80,29 +82,21 @@ pub fn get_task_view(
 }
 
 /// List all available task types in the index
-pub fn list_task_types(
-    agent_index: &doctown::docpack::AgentIndex,
-) -> Result<Vec<String>> {
+pub fn list_task_types(agent_index: &doctown::docpack::AgentIndex) -> Result<Vec<String>> {
     Ok(agent_index.tasks.keys().cloned().collect())
 }
 
 /// Get entry points for the codebase
-pub fn get_entry_points(
-    agent_index: &doctown::docpack::AgentIndex,
-) -> Result<Vec<String>> {
+pub fn get_entry_points(agent_index: &doctown::docpack::AgentIndex) -> Result<Vec<String>> {
     Ok(agent_index.quickstart.entry_points.clone())
 }
 
 /// Get core types in the codebase
-pub fn get_core_types(
-    agent_index: &doctown::docpack::AgentIndex,
-) -> Result<Vec<String>> {
+pub fn get_core_types(agent_index: &doctown::docpack::AgentIndex) -> Result<Vec<String>> {
     Ok(agent_index.quickstart.core_types.clone())
 }
 
 /// Get most connected symbols (hub nodes)
-pub fn get_most_connected(
-    agent_index: &doctown::docpack::AgentIndex,
-) -> Result<Vec<String>> {
+pub fn get_most_connected(agent_index: &doctown::docpack::AgentIndex) -> Result<Vec<String>> {
     Ok(agent_index.quickstart.most_connected.clone())
 }

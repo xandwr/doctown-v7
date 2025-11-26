@@ -3,9 +3,9 @@
 // Transforms community detection results, symbol tables, and graph structure
 // into a curated index designed for AI agents to navigate codebases efficiently.
 
+use crate::docpack::{AgentIndex, AgentQuickstart, Subsystem, SymbolEntry};
+use crate::ingest::{GraphEdge, GraphEdgeKind, ProjectGraph, SymbolNode};
 use std::collections::{HashMap, HashSet};
-use crate::ingest::{ProjectGraph, SymbolNode, GraphEdge, GraphEdgeKind};
-use crate::docpack::{AgentIndex, Subsystem, SymbolEntry, AgentQuickstart};
 
 /// Build the complete agent index from a project graph
 pub fn build_agent_index(graph: &ProjectGraph) -> AgentIndex {
@@ -32,10 +32,14 @@ fn build_subsystems(graph: &ProjectGraph) -> Vec<Subsystem> {
     for community in &graph.communities {
         let confidence = community.cohesion;
         let role = infer_subsystem_role(&community.symbol_names, &community.suggested_label);
-        let summary = generate_subsystem_summary(&community.symbol_names, &community.suggested_label, &role);
+        let summary =
+            generate_subsystem_summary(&community.symbol_names, &community.suggested_label, &role);
 
         subsystems.push(Subsystem {
-            name: community.suggested_label.clone().unwrap_or_else(|| format!("subsystem_{}", community.id)),
+            name: community
+                .suggested_label
+                .clone()
+                .unwrap_or_else(|| format!("subsystem_{}", community.id)),
             symbols: community.symbol_names.clone(),
             files: community.files.iter().cloned().collect(),
             confidence,
@@ -45,7 +49,11 @@ fn build_subsystems(graph: &ProjectGraph) -> Vec<Subsystem> {
     }
 
     // Sort by confidence (highest first)
-    subsystems.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    subsystems.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     subsystems
 }
@@ -83,23 +91,40 @@ fn infer_subsystem_role(symbol_names: &[String], label: &Option<String>) -> Stri
 
     // Pattern matching on symbol names
     let symbol_lower: Vec<String> = symbol_names.iter().map(|s| s.to_lowercase()).collect();
-    
-    if symbol_lower.iter().any(|s| s.contains("server") || s.contains("handler") || s.contains("request")) {
+
+    if symbol_lower
+        .iter()
+        .any(|s| s.contains("server") || s.contains("handler") || s.contains("request"))
+    {
         return "RPC/server layer".to_string();
     }
-    if symbol_lower.iter().any(|s| s.contains("cli") || s.contains("command") || s.contains("args")) {
+    if symbol_lower
+        .iter()
+        .any(|s| s.contains("cli") || s.contains("command") || s.contains("args"))
+    {
         return "CLI interface".to_string();
     }
-    if symbol_lower.iter().any(|s| s.contains("read") || s.contains("write") || s.contains("file") || s.contains("path")) {
+    if symbol_lower.iter().any(|s| {
+        s.contains("read") || s.contains("write") || s.contains("file") || s.contains("path")
+    }) {
         return "I/O operations".to_string();
     }
-    if symbol_lower.iter().any(|s| s.contains("parse") || s.contains("token") || s.contains("syntax")) {
+    if symbol_lower
+        .iter()
+        .any(|s| s.contains("parse") || s.contains("token") || s.contains("syntax"))
+    {
         return "parsing and analysis".to_string();
     }
-    if symbol_lower.iter().any(|s| s.contains("embed") || s.contains("model") || s.contains("infer")) {
+    if symbol_lower
+        .iter()
+        .any(|s| s.contains("embed") || s.contains("model") || s.contains("infer"))
+    {
         return "embedding and ML inference".to_string();
     }
-    if symbol_lower.iter().any(|s| s.contains("graph") || s.contains("edge") || s.contains("node")) {
+    if symbol_lower
+        .iter()
+        .any(|s| s.contains("graph") || s.contains("edge") || s.contains("node"))
+    {
         return "graph structures and algorithms".to_string();
     }
 
@@ -107,20 +132,25 @@ fn infer_subsystem_role(symbol_names: &[String], label: &Option<String>) -> Stri
 }
 
 /// Generate a concise summary of what the subsystem does
-fn generate_subsystem_summary(symbol_names: &[String], label: &Option<String>, role: &str) -> String {
+fn generate_subsystem_summary(
+    symbol_names: &[String],
+    label: &Option<String>,
+    role: &str,
+) -> String {
     let label_str = label.as_ref().map(|s| s.as_str()).unwrap_or("unnamed");
     let symbol_count = symbol_names.len();
-    
+
     format!(
         "Subsystem '{}' ({} symbols): {}",
-        label_str,
-        symbol_count,
-        role
+        label_str, symbol_count, role
     )
 }
 
 /// Build comprehensive symbol table with all metadata agents need
-fn build_symbol_table(graph: &ProjectGraph, subsystems: &[Subsystem]) -> HashMap<String, SymbolEntry> {
+fn build_symbol_table(
+    graph: &ProjectGraph,
+    subsystems: &[Subsystem],
+) -> HashMap<String, SymbolEntry> {
     let mut symbols = HashMap::new();
 
     // Build symbol name -> subsystem mapping
@@ -136,8 +166,14 @@ fn build_symbol_table(graph: &ProjectGraph, subsystems: &[Subsystem]) -> HashMap
     for edge in &graph.edges {
         match edge.kind {
             GraphEdgeKind::SymbolToSymbol | GraphEdgeKind::SymbolSimilarity => {
-                related_map.entry(edge.src.clone()).or_insert_with(HashSet::new).insert(edge.dst.clone());
-                related_map.entry(edge.dst.clone()).or_insert_with(HashSet::new).insert(edge.src.clone());
+                related_map
+                    .entry(edge.src.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(edge.dst.clone());
+                related_map
+                    .entry(edge.dst.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(edge.src.clone());
             }
             _ => {}
         }
@@ -153,11 +189,13 @@ fn build_symbol_table(graph: &ProjectGraph, subsystems: &[Subsystem]) -> HashMap
 
     // Build symbol table from graph symbols
     for symbol in &graph.symbols {
-        let subsystem = symbol_to_subsystem.get(&symbol.name)
+        let subsystem = symbol_to_subsystem
+            .get(&symbol.name)
             .cloned()
             .unwrap_or_else(|| "unclustered".to_string());
 
-        let related_symbols: Vec<String> = related_map.get(&symbol.name)
+        let related_symbols: Vec<String> = related_map
+            .get(&symbol.name)
             .map(|set| set.iter().cloned().collect())
             .unwrap_or_default();
 
@@ -166,7 +204,9 @@ fn build_symbol_table(graph: &ProjectGraph, subsystems: &[Subsystem]) -> HashMap
         let summary = build_symbol_summary(symbol);
 
         // Get file from first chunk_id
-        let file = symbol.chunk_ids.first()
+        let file = symbol
+            .chunk_ids
+            .first()
             .and_then(|cid| chunk_to_file.get(cid))
             .cloned()
             .unwrap_or_default();
@@ -193,44 +233,56 @@ fn build_symbol_table(graph: &ProjectGraph, subsystems: &[Subsystem]) -> HashMap
 fn build_signature(symbol: &SymbolNode) -> Option<String> {
     match symbol.kind.as_str() {
         "function" | "method" => {
-            let params = symbol.parameters.as_ref().map(|p| {
-                p.iter()
-                    .map(|(name, ty)| format!("{}: {}", name, ty))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }).unwrap_or_default();
-            
-            let ret = symbol.return_type.as_ref()
+            let params = symbol
+                .parameters
+                .as_ref()
+                .map(|p| {
+                    p.iter()
+                        .map(|(name, ty)| format!("{}: {}", name, ty))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+
+            let ret = symbol
+                .return_type
+                .as_ref()
                 .map(|r| format!(" -> {}", r))
                 .unwrap_or_default();
-            
-            let generics = symbol.generics.as_ref()
+
+            let generics = symbol
+                .generics
+                .as_ref()
                 .map(|g| format!("<{}>", g))
                 .unwrap_or_default();
-            
+
             Some(format!("fn {}{}({}){}", symbol.name, generics, params, ret))
         }
         "struct" => {
-            let generics = symbol.generics.as_ref()
+            let generics = symbol
+                .generics
+                .as_ref()
                 .map(|g| format!("<{}>", g))
                 .unwrap_or_default();
             Some(format!("struct {}{}", symbol.name, generics))
         }
         "enum" => {
-            let generics = symbol.generics.as_ref()
+            let generics = symbol
+                .generics
+                .as_ref()
                 .map(|g| format!("<{}>", g))
                 .unwrap_or_default();
             Some(format!("enum {}{}", symbol.name, generics))
         }
         "trait" => {
-            let generics = symbol.generics.as_ref()
+            let generics = symbol
+                .generics
+                .as_ref()
                 .map(|g| format!("<{}>", g))
                 .unwrap_or_default();
             Some(format!("trait {}{}", symbol.name, generics))
         }
-        "type_alias" => {
-            Some(format!("type {}", symbol.name))
-        }
+        "type_alias" => Some(format!("type {}", symbol.name)),
         _ => None,
     }
 }
@@ -276,14 +328,20 @@ fn build_symbol_summary(symbol: &SymbolNode) -> String {
 }
 
 /// Generate task-oriented views: pre-baked entry points for common agent tasks
-fn generate_task_views(graph: &ProjectGraph, symbols: &HashMap<String, SymbolEntry>) -> HashMap<String, Vec<String>> {
+fn generate_task_views(
+    graph: &ProjectGraph,
+    symbols: &HashMap<String, SymbolEntry>,
+) -> HashMap<String, Vec<String>> {
     let mut tasks = HashMap::new();
 
     // Task: Add CLI command
-    let cli_related: Vec<String> = symbols.iter()
+    let cli_related: Vec<String> = symbols
+        .iter()
         .filter(|(name, entry)| {
-            (entry.kind == "enum" || entry.kind == "struct") && 
-            (name.to_lowercase().contains("command") || name.to_lowercase().contains("cli") || name.to_lowercase().contains("args"))
+            (entry.kind == "enum" || entry.kind == "struct")
+                && (name.to_lowercase().contains("command")
+                    || name.to_lowercase().contains("cli")
+                    || name.to_lowercase().contains("args"))
         })
         .map(|(_, entry)| format!("{}:{}", entry.file, entry.chunk))
         .collect();
@@ -292,10 +350,13 @@ fn generate_task_views(graph: &ProjectGraph, symbols: &HashMap<String, SymbolEnt
     }
 
     // Task: Modify RPC handler
-    let rpc_handlers: Vec<String> = symbols.iter()
+    let rpc_handlers: Vec<String> = symbols
+        .iter()
         .filter(|(name, entry)| {
-            entry.kind == "function" && 
-            (name.contains("handle_") || name.contains("process_") || name.to_lowercase().contains("server"))
+            entry.kind == "function"
+                && (name.contains("handle_")
+                    || name.contains("process_")
+                    || name.to_lowercase().contains("server"))
         })
         .map(|(_, entry)| format!("{}:{}", entry.file, entry.chunk))
         .collect();
@@ -304,7 +365,8 @@ fn generate_task_views(graph: &ProjectGraph, symbols: &HashMap<String, SymbolEnt
     }
 
     // Task: Change docpack format
-    let docpack_core: Vec<String> = symbols.iter()
+    let docpack_core: Vec<String> = symbols
+        .iter()
         .filter(|(name, _)| {
             name.contains("Docpack") || name.contains("Manifest") || name.contains("Builder")
         })
@@ -315,10 +377,11 @@ fn generate_task_views(graph: &ProjectGraph, symbols: &HashMap<String, SymbolEnt
     }
 
     // Task: Improve search
-    let search_related: Vec<String> = symbols.iter()
+    let search_related: Vec<String> = symbols
+        .iter()
         .filter(|(name, entry)| {
-            entry.kind == "function" && 
-            (name.contains("search") || name.contains("query") || name.contains("find"))
+            entry.kind == "function"
+                && (name.contains("search") || name.contains("query") || name.contains("find"))
         })
         .map(|(_, entry)| format!("{}:{}", entry.file, entry.chunk))
         .collect();
@@ -327,7 +390,9 @@ fn generate_task_views(graph: &ProjectGraph, symbols: &HashMap<String, SymbolEnt
     }
 
     // Task: Add subsystem (new module/component)
-    let main_files: Vec<String> = graph.files.iter()
+    let main_files: Vec<String> = graph
+        .files
+        .iter()
         .filter(|f| f.path.contains("main.rs") || f.path.contains("lib.rs"))
         .map(|f| f.path.clone())
         .collect();
@@ -336,13 +401,14 @@ fn generate_task_views(graph: &ProjectGraph, symbols: &HashMap<String, SymbolEnt
     }
 
     // Task: Modify embedding/ML inference
-    let ml_related: Vec<String> = symbols.iter()
+    let ml_related: Vec<String> = symbols
+        .iter()
         .filter(|(name, entry)| {
-            name.to_lowercase().contains("embed") || 
-            name.to_lowercase().contains("model") || 
-            name.to_lowercase().contains("infer") ||
-            entry.file.contains("embedding") || 
-            entry.file.contains("nlp")
+            name.to_lowercase().contains("embed")
+                || name.to_lowercase().contains("model")
+                || name.to_lowercase().contains("infer")
+                || entry.file.contains("embedding")
+                || entry.file.contains("nlp")
         })
         .map(|(_, entry)| format!("{}:{}", entry.file, entry.chunk))
         .collect();
@@ -360,7 +426,8 @@ fn build_impact_graph(graph: &ProjectGraph) -> HashMap<String, Vec<String>> {
     for edge in &graph.edges {
         match edge.kind {
             GraphEdgeKind::SymbolToSymbol | GraphEdgeKind::SymbolSimilarity => {
-                impact.entry(edge.src.clone())
+                impact
+                    .entry(edge.src.clone())
                     .or_insert_with(Vec::new)
                     .push(edge.dst.clone());
             }
@@ -385,33 +452,37 @@ fn generate_quickstart(
     impact_graph: &HashMap<String, Vec<String>>,
 ) -> AgentQuickstart {
     // Entry points: main functions, public API functions
-    let entry_points: Vec<String> = symbols.iter()
+    let entry_points: Vec<String> = symbols
+        .iter()
         .filter(|(name, entry)| {
-            name.as_str() == "main" || 
-            entry.kind == "function" && entry.file.contains("main.rs") ||
-            entry.kind == "function" && entry.file.contains("lib.rs")
+            name.as_str() == "main"
+                || entry.kind == "function" && entry.file.contains("main.rs")
+                || entry.kind == "function" && entry.file.contains("lib.rs")
         })
         .map(|(name, entry)| format!("{}:{}", entry.file, name))
         .take(5)
         .collect();
 
     // Core types: main structs/enums
-    let core_types: Vec<String> = symbols.iter()
+    let core_types: Vec<String> = symbols
+        .iter()
         .filter(|(_, entry)| {
-            (entry.kind == "struct" || entry.kind == "enum") &&
-            !entry.file.contains("test") &&
-            !entry.file.contains("example")
+            (entry.kind == "struct" || entry.kind == "enum")
+                && !entry.file.contains("test")
+                && !entry.file.contains("example")
         })
         .map(|(name, _)| name.clone())
         .take(10)
         .collect();
 
     // Most connected: symbols with most edges in impact graph
-    let mut connected: Vec<(String, usize)> = impact_graph.iter()
+    let mut connected: Vec<(String, usize)> = impact_graph
+        .iter()
         .map(|(symbol, targets)| (symbol.clone(), targets.len()))
         .collect();
     connected.sort_by(|a, b| b.1.cmp(&a.1));
-    let most_connected: Vec<String> = connected.iter()
+    let most_connected: Vec<String> = connected
+        .iter()
         .take(10)
         .map(|(symbol, _)| symbol.clone())
         .collect();
@@ -423,7 +494,10 @@ fn generate_quickstart(
         if role_lower.contains("cli") {
             subsystem_map.insert("if_adding_feature".to_string(), subsystem.name.clone());
         }
-        if role_lower.contains("i/o") || role_lower.contains("archive") || role_lower.contains("docpack") {
+        if role_lower.contains("i/o")
+            || role_lower.contains("archive")
+            || role_lower.contains("docpack")
+        {
             subsystem_map.insert("if_fixing_io".to_string(), subsystem.name.clone());
         }
         if role_lower.contains("server") || role_lower.contains("rpc") {

@@ -53,21 +53,19 @@ pub fn get_impact(
     impact_graph: &HashMap<String, Vec<String>>,
 ) -> Result<ImpactResponse> {
     let max_depth = query.max_depth.unwrap_or(5);
-    
-    let direct = impact_graph.get(&query.symbol)
-        .cloned()
-        .unwrap_or_default();
-    
+
+    let direct = impact_graph.get(&query.symbol).cloned().unwrap_or_default();
+
     let mut all = HashSet::new();
     let mut visited = HashSet::new();
     let mut queue = vec![(query.symbol.clone(), 0)];
-    
+
     while let Some((current, depth)) = queue.pop() {
         if depth >= max_depth || visited.contains(&current) {
             continue;
         }
         visited.insert(current.clone());
-        
+
         if let Some(impacts) = impact_graph.get(&current) {
             for impact in impacts {
                 all.insert(impact.clone());
@@ -77,7 +75,7 @@ pub fn get_impact(
             }
         }
     }
-    
+
     Ok(ImpactResponse {
         symbol: query.symbol.clone(),
         direct_impacts: direct,
@@ -92,31 +90,30 @@ pub fn get_dependencies(
     graph: &doctown::docpack::GraphFile,
 ) -> Result<DependencyResponse> {
     let max_depth = query.max_depth.unwrap_or(5);
-    
+
     // Build reverse dependency map from edges
     let mut dep_map: HashMap<String, Vec<String>> = HashMap::new();
     for edge in &graph.edges {
         if edge.edge_type == "calls" || edge.edge_type == "imports" || edge.edge_type == "uses" {
-            dep_map.entry(edge.from.clone())
+            dep_map
+                .entry(edge.from.clone())
                 .or_default()
                 .push(edge.to.clone());
         }
     }
-    
-    let direct = dep_map.get(&query.symbol)
-        .cloned()
-        .unwrap_or_default();
-    
+
+    let direct = dep_map.get(&query.symbol).cloned().unwrap_or_default();
+
     let mut all = HashSet::new();
     let mut visited = HashSet::new();
     let mut queue = vec![(query.symbol.clone(), 0)];
-    
+
     while let Some((current, depth)) = queue.pop() {
         if depth >= max_depth || visited.contains(&current) {
             continue;
         }
         visited.insert(current.clone());
-        
+
         if let Some(deps) = dep_map.get(&current) {
             for dep in deps {
                 all.insert(dep.clone());
@@ -126,7 +123,7 @@ pub fn get_dependencies(
             }
         }
     }
-    
+
     Ok(DependencyResponse {
         symbol: query.symbol.clone(),
         direct_dependencies: direct,
@@ -136,12 +133,9 @@ pub fn get_dependencies(
 }
 
 /// Find shortest path between two symbols in the graph
-pub fn find_path(
-    query: &PathQuery,
-    graph: &doctown::docpack::GraphFile,
-) -> Result<PathResponse> {
+pub fn find_path(query: &PathQuery, graph: &doctown::docpack::GraphFile) -> Result<PathResponse> {
     let max_depth = query.max_depth.unwrap_or(10);
-    
+
     // Build adjacency map
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
     for edge in &graph.edges {
@@ -149,12 +143,12 @@ pub fn find_path(
             .or_default()
             .push(edge.to.clone());
     }
-    
+
     // BFS to find shortest path
     let mut queue = vec![(query.from.clone(), vec![query.from.clone()])];
     let mut visited = HashSet::new();
     visited.insert(query.from.clone());
-    
+
     while let Some((current, path)) = queue.pop() {
         if current == query.to {
             return Ok(PathResponse {
@@ -164,11 +158,11 @@ pub fn find_path(
                 length: path.len() - 1,
             });
         }
-        
+
         if path.len() > max_depth {
             continue;
         }
-        
+
         if let Some(neighbors) = adj.get(&current) {
             for neighbor in neighbors {
                 if !visited.contains(neighbor) {
@@ -180,7 +174,7 @@ pub fn find_path(
             }
         }
     }
-    
+
     Ok(PathResponse {
         from: query.from.clone(),
         to: query.to.clone(),

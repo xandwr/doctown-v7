@@ -3,9 +3,9 @@
 // Exposes doctown agent API over stdio using MCP protocol.
 // Clients can discover tools via list_tools and invoke them via call_tool.
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -54,49 +54,48 @@ pub struct McpServer {
 impl McpServer {
     /// Create a new MCP server by loading a .docpack file
     pub fn new(docpack_path: PathBuf) -> Result<Self> {
-        let file = std::fs::File::open(&docpack_path)
-            .context("Failed to open docpack file")?;
-        
-        let mut archive = ZipArchive::new(file)
-            .context("Failed to read docpack archive")?;
-        
+        let file = std::fs::File::open(&docpack_path).context("Failed to open docpack file")?;
+
+        let mut archive = ZipArchive::new(file).context("Failed to read docpack archive")?;
+
         // Load agent index
         let agent_index: doctown::docpack::AgentIndex = {
-            let mut file = archive.by_name("agent_index.json")
+            let mut file = archive
+                .by_name("agent_index.json")
                 .context("agent_index.json not found in docpack")?;
             let mut content = String::new();
             std::io::Read::read_to_string(&mut file, &mut content)?;
-            serde_json::from_str(&content)
-                .context("Failed to parse agent_index.json")?
+            serde_json::from_str(&content).context("Failed to parse agent_index.json")?
         };
-        
+
         // Load chunks
         let chunks: Vec<doctown::docpack::ChunkEntry> = {
-            let mut file = archive.by_name("chunks.json")
+            let mut file = archive
+                .by_name("chunks.json")
                 .context("chunks.json not found in docpack")?;
             let mut content = String::new();
             std::io::Read::read_to_string(&mut file, &mut content)?;
-            serde_json::from_str(&content)
-                .context("Failed to parse chunks.json")?
+            serde_json::from_str(&content).context("Failed to parse chunks.json")?
         };
-        
+
         // Load graph
         let graph: doctown::docpack::GraphFile = {
-            let mut file = archive.by_name("graph.json")
+            let mut file = archive
+                .by_name("graph.json")
                 .context("graph.json not found in docpack")?;
             let mut content = String::new();
             std::io::Read::read_to_string(&mut file, &mut content)?;
-            serde_json::from_str(&content)
-                .context("Failed to parse graph.json")?
+            serde_json::from_str(&content).context("Failed to parse graph.json")?
         };
-        
+
         // Load embeddings (stored as binary .bin file)
         let embeddings: Vec<doctown::ingest::Embedding> = {
-            let mut file = archive.by_name("embeddings.bin")
+            let mut file = archive
+                .by_name("embeddings.bin")
                 .context("embeddings.bin not found in docpack")?;
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut file, &mut bytes)?;
-            
+
             // Parse binary embeddings (row-major f32 array)
             // We need to know the dimension - get it from manifest
             let manifest_file = std::fs::File::open(&docpack_path)?;
@@ -107,7 +106,7 @@ impl McpServer {
                 std::io::Read::read_to_string(&mut file, &mut content)?;
                 serde_json::from_str(&content)?
             };
-            
+
             let dim = manifest.embedding_dimensions;
             if dim == 0 {
                 Vec::new()
@@ -115,12 +114,12 @@ impl McpServer {
                 let n_floats = bytes.len() / 4;
                 let n_embeddings = n_floats / dim;
                 let mut embeddings = Vec::with_capacity(n_embeddings);
-                
+
                 for i in 0..n_embeddings {
                     let start = i * dim * 4;
                     let end = start + dim * 4;
                     let chunk = &bytes[start..end];
-                    
+
                     let mut vec = Vec::with_capacity(dim);
                     for j in 0..dim {
                         let offset = j * 4;
@@ -137,17 +136,17 @@ impl McpServer {
                 embeddings
             }
         };
-        
+
         // Load file structure
         let file_structure: Vec<doctown::docpack::FileStructureNode> = {
-            let mut file = archive.by_name("filestructure.json")
+            let mut file = archive
+                .by_name("filestructure.json")
                 .context("filestructure.json not found in docpack")?;
             let mut content = String::new();
             std::io::Read::read_to_string(&mut file, &mut content)?;
-            serde_json::from_str(&content)
-                .context("Failed to parse filestructure.json")?
+            serde_json::from_str(&content).context("Failed to parse filestructure.json")?
         };
-        
+
         Ok(Self {
             docpack_path,
             agent_index,
@@ -157,19 +156,19 @@ impl McpServer {
             file_structure,
         })
     }
-    
+
     /// Start the MCP server, reading from stdin and writing to stdout
     pub fn run(&mut self) -> Result<()> {
         let stdin = std::io::stdin();
         let mut stdout = std::io::stdout();
         let reader = BufReader::new(stdin);
-        
+
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
                 continue;
             }
-            
+
             let response = match serde_json::from_str::<JsonRpcRequest>(&line) {
                 Ok(request) => self.handle_request(request),
                 Err(e) => JsonRpcResponse {
@@ -183,15 +182,15 @@ impl McpServer {
                     }),
                 },
             };
-            
+
             let response_json = serde_json::to_string(&response)?;
             writeln!(stdout, "{}", response_json)?;
             stdout.flush()?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Handle a JSON-RPC request
     fn handle_request(&mut self, request: JsonRpcRequest) -> JsonRpcResponse {
         let result = match request.method.as_str() {
@@ -200,7 +199,7 @@ impl McpServer {
             "tools/call" => self.handle_call_tool(request.params),
             _ => Err(anyhow::anyhow!("Method not found: {}", request.method)),
         };
-        
+
         match result {
             Ok(value) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
@@ -220,7 +219,7 @@ impl McpServer {
             },
         }
     }
-    
+
     /// Handle initialize request
     fn handle_initialize(&self, _params: Option<Value>) -> Result<Value> {
         Ok(json!({
@@ -234,7 +233,7 @@ impl McpServer {
             }
         }))
     }
-    
+
     /// Handle tools/list request
     fn handle_list_tools(&self) -> Result<Value> {
         let tools = vec![
@@ -469,18 +468,19 @@ impl McpServer {
                 }
             }),
         ];
-        
+
         Ok(json!({"tools": tools}))
     }
-    
+
     /// Handle tools/call request
     fn handle_call_tool(&mut self, params: Option<Value>) -> Result<Value> {
         let params = params.ok_or_else(|| anyhow::anyhow!("Missing params"))?;
-        let tool_name = params.get("name")
+        let tool_name = params
+            .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?;
         let arguments = params.get("arguments").cloned();
-        
+
         let result = match tool_name {
             "search_symbols" => self.tool_search_symbols(arguments)?,
             "get_symbol" => self.tool_get_symbol(arguments)?,
@@ -503,7 +503,7 @@ impl McpServer {
             "create_test_for_symbol" => self.tool_create_test_for_symbol(arguments)?,
             _ => return Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
-        
+
         Ok(json!({
             "content": [{
                 "type": "text",
@@ -511,50 +511,47 @@ impl McpServer {
             }]
         }))
     }
-    
+
     // Tool implementations
-    
+
     fn tool_search_symbols(&self, args: Option<Value>) -> Result<Value> {
-        let query: api::search::SearchQuery = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
+        let query: api::search::SearchQuery =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
         let response = api::search::keyword_search(&query, &self.agent_index.symbols)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_get_symbol(&self, args: Option<Value>) -> Result<Value> {
         let args = args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?;
-        let name = args.get("name")
+        let name = args
+            .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing symbol name"))?;
         let result = api::search::get_symbol(name, &self.agent_index.symbols)?;
         Ok(serde_json::to_value(result)?)
     }
-    
+
     fn tool_get_impact(&self, args: Option<Value>) -> Result<Value> {
-        let query: api::graph::ImpactQuery = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
+        let query: api::graph::ImpactQuery =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
         let response = api::graph::get_impact(&query, &self.agent_index.impact_graph)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_get_dependencies(&self, args: Option<Value>) -> Result<Value> {
-        let query: api::graph::DependencyQuery = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
+        let query: api::graph::DependencyQuery =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
         let response = api::graph::get_dependencies(&query, &self.graph)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_find_path(&self, args: Option<Value>) -> Result<Value> {
-        let query: api::graph::PathQuery = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
+        let query: api::graph::PathQuery =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
         let response = api::graph::find_path(&query, &self.graph)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_list_subsystems(&self, args: Option<Value>) -> Result<Value> {
         let query: api::subsystems::SubsystemQuery = if let Some(a) = args {
             serde_json::from_value(a)?
@@ -567,88 +564,77 @@ impl McpServer {
         let response = api::subsystems::list_subsystems(&query, &self.agent_index)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_get_subsystem(&self, args: Option<Value>) -> Result<Value> {
         let args = args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?;
-        let name = args.get("name")
+        let name = args
+            .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing subsystem name"))?;
         let result = api::subsystems::get_subsystem_detail(name, &self.agent_index)?;
         Ok(serde_json::to_value(result)?)
     }
-    
+
     fn tool_get_quickstart(&self) -> Result<Value> {
         let response = api::tasks::get_quickstart(&self.agent_index)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_get_task_view(&self, args: Option<Value>) -> Result<Value> {
-        let query: api::tasks::TaskQuery = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
+        let query: api::tasks::TaskQuery =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
         let response = api::tasks::get_task_view(&query, &self.agent_index)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_read_file(&mut self, args: Option<Value>) -> Result<Value> {
-        let request: api::editor::FileRequest = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
-        
+        let request: api::editor::FileRequest =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+
         let file = std::fs::File::open(&self.docpack_path)?;
         let mut archive = ZipArchive::new(file)?;
-        
+
         let response = api::editor::read_file(&request, &mut archive)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_get_symbol_content(&mut self, args: Option<Value>) -> Result<Value> {
-        let request: api::editor::SymbolContentRequest = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
-        
+        let request: api::editor::SymbolContentRequest =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+
         let file = std::fs::File::open(&self.docpack_path)?;
         let mut archive = ZipArchive::new(file)?;
-        
-        let response = api::editor::get_symbol_content(
-            &request,
-            &self.agent_index.symbols,
-            &mut archive,
-        )?;
+
+        let response =
+            api::editor::get_symbol_content(&request, &self.agent_index.symbols, &mut archive)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_list_files(&self) -> Result<Value> {
         let files = api::editor::list_files(&self.file_structure)?;
         Ok(serde_json::to_value(files)?)
     }
-    
+
     // Write operation tools
-    
+
     fn tool_apply_patch(&mut self, args: Option<Value>) -> Result<Value> {
-        let request: api::write::ApplyPatchRequest = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
-        
+        let request: api::write::ApplyPatchRequest =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+
         let file = std::fs::File::open(&self.docpack_path)?;
         let mut archive = ZipArchive::new(file)?;
-        
-        let response = api::write::apply_patch(
-            &request,
-            &self.agent_index.symbols,
-            &mut archive,
-        )?;
+
+        let response = api::write::apply_patch(&request, &self.agent_index.symbols, &mut archive)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_propose_refactor(&mut self, args: Option<Value>) -> Result<Value> {
-        let request: api::write::ProposeRefactorRequest = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
-        
+        let request: api::write::ProposeRefactorRequest =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+
         let file = std::fs::File::open(&self.docpack_path)?;
         let mut archive = ZipArchive::new(file)?;
-        
+
         let response = api::write::propose_refactor(
             &request,
             &self.agent_index.symbols,
@@ -657,15 +643,14 @@ impl McpServer {
         )?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_generate_symbol_docs(&mut self, args: Option<Value>) -> Result<Value> {
-        let request: api::write::GenerateSymbolDocsRequest = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
-        
+        let request: api::write::GenerateSymbolDocsRequest =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+
         let file = std::fs::File::open(&self.docpack_path)?;
         let mut archive = ZipArchive::new(file)?;
-        
+
         let response = api::write::generate_symbol_docs(
             &request,
             &self.agent_index.symbols,
@@ -674,43 +659,34 @@ impl McpServer {
         )?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_rewrite_chunk(&self, args: Option<Value>) -> Result<Value> {
-        let request: api::write::RewriteChunkRequest = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
-        
-        let response = api::write::rewrite_chunk(
-            &request,
-            &self.chunks,
-            &self.agent_index.symbols,
-        )?;
+        let request: api::write::RewriteChunkRequest =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+
+        let response =
+            api::write::rewrite_chunk(&request, &self.chunks, &self.agent_index.symbols)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_update_file_section(&mut self, args: Option<Value>) -> Result<Value> {
-        let request: api::write::UpdateFileSectionRequest = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
-        
+        let request: api::write::UpdateFileSectionRequest =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+
         let file = std::fs::File::open(&self.docpack_path)?;
         let mut archive = ZipArchive::new(file)?;
-        
-        let response = api::write::update_file_section(
-            &request,
-            &mut archive,
-        )?;
+
+        let response = api::write::update_file_section(&request, &mut archive)?;
         Ok(serde_json::to_value(response)?)
     }
-    
+
     fn tool_create_test_for_symbol(&mut self, args: Option<Value>) -> Result<Value> {
-        let request: api::write::CreateTestRequest = serde_json::from_value(
-            args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?
-        )?;
-        
+        let request: api::write::CreateTestRequest =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+
         let file = std::fs::File::open(&self.docpack_path)?;
         let mut archive = ZipArchive::new(file)?;
-        
+
         let response = api::write::create_test_for_symbol(
             &request,
             &self.agent_index.symbols,

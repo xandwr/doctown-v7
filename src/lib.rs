@@ -9,5 +9,5 @@ pub mod ingest;
 pub mod nlp;
 
 // Re-export commonly used types
-pub use docpack::{AgentIndex, Subsystem, SymbolEntry, AgentQuickstart};
-pub use ingest::{Embedding, ProcessedFile, ProjectGraph, SymbolNode, GraphEdge, GraphEdgeKind};
+pub use docpack::{AgentIndex, AgentQuickstart, Subsystem, SymbolEntry};
+pub use ingest::{Embedding, GraphEdge, GraphEdgeKind, ProcessedFile, ProjectGraph, SymbolNode};

@@ -866,7 +866,11 @@ impl DocpackBuilder {
     }
 
     /// Write the .docpack file to disk
-    pub fn write_to_file<P: AsRef<Path>>(&self, output_path: P, project_graph: Option<&crate::ingest::ProjectGraph>) -> Result<()> {
+    pub fn write_to_file<P: AsRef<Path>>(
+        &self,
+        output_path: P,
+        project_graph: Option<&crate::ingest::ProjectGraph>,
+    ) -> Result<()> {
         let file = std::fs::File::create(output_path)?;
         let mut zip = ZipWriter::new(file);
         let options: FileOptions<()> = FileOptions::default()

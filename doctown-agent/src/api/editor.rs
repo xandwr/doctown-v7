@@ -1,6 +1,6 @@
 // editor.rs - Read-only file content access and chunk retrieval
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use zip::ZipArchive;
@@ -51,16 +51,17 @@ pub fn read_file(
 ) -> Result<FileResponse> {
     // Try to find the file in source/ directory
     let file_path = format!("source/{}", request.path.trim_start_matches('/'));
-    
-    let mut file = archive.by_name(&file_path)
+
+    let mut file = archive
+        .by_name(&file_path)
         .context(format!("File not found: {}", request.path))?;
-    
+
     let mut content = String::new();
     file.read_to_string(&mut content)
         .context("Failed to read file content")?;
-    
+
     let size = content.len();
-    
+
     Ok(FileResponse {
         path: request.path.clone(),
         content,
@@ -74,7 +75,7 @@ pub fn get_chunk(
     chunks: &[doctown::docpack::ChunkEntry],
 ) -> Result<Option<ChunkResponse>> {
     let chunk = chunks.iter().find(|c| c.chunk_id == request.chunk_id);
-    
+
     if let Some(c) = chunk {
         Ok(Some(ChunkResponse {
             chunk_id: c.chunk_id.clone(),
@@ -99,7 +100,7 @@ pub fn get_symbol_content(
         let file_request = FileRequest {
             path: entry.file.clone(),
         };
-        
+
         match read_file(&file_request, archive) {
             Ok(file_response) => {
                 // Parse chunk range to extract the relevant portion
@@ -108,7 +109,7 @@ pub fn get_symbol_content(
                 } else {
                     file_response.content.clone()
                 };
-                
+
                 Ok(Some(SymbolContentResponse {
                     symbol: request.symbol.clone(),
                     file: entry.file.clone(),
@@ -129,21 +130,19 @@ fn extract_chunk_from_content(content: &str, chunk_range: &str) -> String {
     if parts.len() != 2 {
         return content.to_string();
     }
-    
+
     if let (Ok(start), Ok(end)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
         // Assume byte offsets for now
         if start < content.len() && end <= content.len() {
             return content[start..end].to_string();
         }
     }
-    
+
     content.to_string()
 }
 
 /// List all files in the docpack
-pub fn list_files(
-    file_structure: &[doctown::docpack::FileStructureNode],
-) -> Result<Vec<String>> {
+pub fn list_files(file_structure: &[doctown::docpack::FileStructureNode]) -> Result<Vec<String>> {
     let mut files = Vec::new();
     collect_files(file_structure, &mut files);
     Ok(files)
