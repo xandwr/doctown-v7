@@ -20,18 +20,19 @@ impl EmbeddingEngine {
         Ok(Self { tokenizer, session })
     }
 
+    #[allow(dead_code)]
     pub fn embed(&mut self, text: &str) -> Result<Arc<[f32]>> {
         // 1) tokenize
         let encoding = self
             .tokenizer
             .encode(text, true)
             .map_err(|e| anyhow::anyhow!("Failed to encode text: {}", e))?;
-        
+
         // Clamp token IDs to valid range for the model (BERT vocab size is typically 30522)
         // Token IDs outside this range get mapped to [UNK] token (100)
         const MAX_TOKEN_ID: u32 = 30521;
         const UNK_TOKEN_ID: i64 = 100;
-        
+
         let input_ids = encoding
             .get_ids()
             .iter()
@@ -47,14 +48,14 @@ impl EmbeddingEngine {
         // 2) create input tensors
         let len = input_ids.len();
         let shape = vec![1, len];
-        
+
         // Create input_ids tensor
         let input_tensor = Value::from_array((shape.as_slice(), input_ids))?;
-        
+
         // Create attention_mask tensor (all ones)
         let attention_mask: Vec<i64> = vec![1; len];
         let attention_mask_tensor = Value::from_array((shape.as_slice(), attention_mask))?;
-        
+
         // Create token_type_ids tensor (all zeros for single segment)
         let token_type_ids: Vec<i64> = vec![0; len];
         let token_type_ids_tensor = Value::from_array((shape.as_slice(), token_type_ids))?;
@@ -80,10 +81,105 @@ impl EmbeddingEngine {
     }
 
     pub fn embed_batch(&mut self, inputs: &[String]) -> Result<Vec<Arc<[f32]>>> {
-        let mut embeddings = Vec::with_capacity(inputs.len());
-        for text in inputs {
-            embeddings.push(self.embed(text)?);
+        if inputs.is_empty() {
+            return Ok(Vec::new());
         }
+
+        // Tokenize all inputs
+        let mut all_input_ids = Vec::with_capacity(inputs.len());
+        let mut all_attention_masks = Vec::with_capacity(inputs.len());
+        let mut all_token_type_ids = Vec::with_capacity(inputs.len());
+        let mut max_len = 0;
+
+        for text in inputs {
+            let encoding = self
+                .tokenizer
+                .encode(text.as_str(), true)
+                .map_err(|e| anyhow::anyhow!("Failed to encode text: {}", e))?;
+
+            // Clamp token IDs to valid range
+            const MAX_TOKEN_ID: u32 = 30521;
+            const UNK_TOKEN_ID: i64 = 100;
+
+            let input_ids: Vec<i64> = encoding
+                .get_ids()
+                .iter()
+                .map(|&id| {
+                    if id > MAX_TOKEN_ID {
+                        UNK_TOKEN_ID
+                    } else {
+                        id as i64
+                    }
+                })
+                .collect();
+
+            let len = input_ids.len();
+            max_len = max_len.max(len);
+
+            all_input_ids.push(input_ids);
+            all_attention_masks.push(vec![1i64; len]);
+            all_token_type_ids.push(vec![0i64; len]);
+        }
+
+        // Pad all sequences to max_len
+        for i in 0..inputs.len() {
+            let current_len = all_input_ids[i].len();
+            if current_len < max_len {
+                let pad_len = max_len - current_len;
+                all_input_ids[i].extend(vec![0i64; pad_len]);
+                all_attention_masks[i].extend(vec![0i64; pad_len]);
+                all_token_type_ids[i].extend(vec![0i64; pad_len]);
+            }
+        }
+
+        // Flatten into batch tensors [batch_size, max_len]
+        let batch_size = inputs.len();
+        let shape = vec![batch_size, max_len];
+
+        let flat_input_ids: Vec<i64> = all_input_ids.into_iter().flatten().collect();
+        let flat_attention_masks: Vec<i64> = all_attention_masks.into_iter().flatten().collect();
+        let flat_token_type_ids: Vec<i64> = all_token_type_ids.into_iter().flatten().collect();
+
+        // Create batch tensors
+        let input_tensor = Value::from_array((shape.as_slice(), flat_input_ids))?;
+        let attention_mask_tensor = Value::from_array((shape.as_slice(), flat_attention_masks))?;
+        let token_type_ids_tensor = Value::from_array((shape.as_slice(), flat_token_type_ids))?;
+
+        // Run batch inference
+        let outputs = self.session.run(ort::inputs![
+            "input_ids" => input_tensor,
+            "attention_mask" => attention_mask_tensor,
+            "token_type_ids" => token_type_ids_tensor
+        ])?;
+
+        // Extract embeddings - output shape is [batch_size, embedding_dim]
+        let output_tensor = outputs[0].try_extract_tensor::<f32>()?;
+        let (output_shape, data) = output_tensor;
+
+        // Determine embedding dimension from output shape
+        let embedding_dim = if output_shape.len() >= 2 {
+            output_shape[output_shape.len() - 1] as usize
+        } else {
+            return Err(anyhow::anyhow!(
+                "Unexpected output shape: {:?}",
+                output_shape
+            ));
+        };
+
+        // Split batch results into individual embeddings
+        let mut embeddings = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            let start = i * embedding_dim;
+            let end = start + embedding_dim;
+            let mut embedding = data[start..end].to_vec();
+
+            // L2-normalize each embedding
+            Self::l2_normalize(&mut embedding);
+
+            let arc_embedding: Arc<[f32]> = Arc::from(embedding.into_boxed_slice());
+            embeddings.push(arc_embedding);
+        }
+
         Ok(embeddings)
     }
 

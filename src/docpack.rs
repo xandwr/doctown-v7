@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
-use zip::write::{FileOptions, ZipWriter};
 use zip::CompressionMethod;
+use zip::write::{FileOptions, ZipWriter};
 
-use crate::ingest::{GraphEdgeKind, ProcessedFile, SymbolNode};
 use crate::docgen::DocGenerator;
+use crate::ingest::{GraphEdgeKind, ProcessedFile, SymbolNode};
 
 /// Manifest metadata for the .docpack file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,7 +167,7 @@ pub struct DocpackBuilder {
 impl DocpackBuilder {
     pub fn new(source_repo: Option<String>) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
-        
+
         Self {
             manifest: Manifest {
                 docpack_version: "7.0.0".to_string(),
@@ -229,9 +229,7 @@ impl DocpackBuilder {
         // Update manifest with totals
         self.manifest.total_files = processed_files.len();
         self.manifest.total_chunks = self.chunks.len();
-        self.manifest.embedding_dimensions = self.embeddings.first()
-            .map(|e| e.len())
-            .unwrap_or(0);
+        self.manifest.embedding_dimensions = self.embeddings.first().map(|e| e.len()).unwrap_or(0);
 
         Ok(())
     }
@@ -276,7 +274,7 @@ impl DocpackBuilder {
         for pf in processed_files {
             let mut metadata = HashMap::new();
             metadata.insert("type".to_string(), "file".to_string());
-            
+
             self.graph.nodes.push(GraphNode {
                 id: format!("file:{}", pf.file_node.path),
                 node_type: "file".to_string(),
@@ -294,7 +292,7 @@ impl DocpackBuilder {
                 if let Some(vis) = &symbol.visibility {
                     metadata.insert("visibility".to_string(), vis.clone());
                 }
-                
+
                 self.graph.nodes.push(GraphNode {
                     id: format!("symbol:{}:{}", pf.file_node.path, symbol.name),
                     node_type: "symbol".to_string(),
@@ -340,11 +338,15 @@ impl DocpackBuilder {
         let n_chunks = self.embeddings.len();
 
         if n_chunks > 0 {
-            println!("⚡ Computing semantic similarities for {} chunks...", n_chunks);
+            println!(
+                "⚡ Computing semantic similarities for {} chunks...",
+                n_chunks
+            );
 
             // Build a chunk_id -> index map for fast lookups
             use std::collections::HashMap;
-            let chunk_id_to_idx: HashMap<String, usize> = self.chunks
+            let chunk_id_to_idx: HashMap<String, usize> = self
+                .chunks
                 .iter()
                 .enumerate()
                 .map(|(i, c)| (c.chunk_id.clone(), i))
@@ -358,7 +360,8 @@ impl DocpackBuilder {
                 // Collect similarities to other chunks
                 let mut neigh: Vec<(usize, f32)> = Vec::new();
                 let a = self.embeddings[i].as_ref();
-                for j in (i+1)..n_chunks {  // Only compute upper triangle, add both directions
+                for j in (i + 1)..n_chunks {
+                    // Only compute upper triangle, add both directions
                     let b = self.embeddings[j].as_ref();
                     let score = Self::cosine(a, b);
                     if score >= sim_threshold {
@@ -413,8 +416,12 @@ impl DocpackBuilder {
                         }
                         // normalize symbol embedding
                         Self::normalize_inplace(&mut agg);
-                        symbol_embeddings.insert(format!("symbol:{}:{}", pf.file_node.path, symbol.name), agg);
-                        symbol_chunk_counts.insert(format!("symbol:{}:{}", pf.file_node.path, symbol.name), count);
+                        symbol_embeddings
+                            .insert(format!("symbol:{}:{}", pf.file_node.path, symbol.name), agg);
+                        symbol_chunk_counts.insert(
+                            format!("symbol:{}:{}", pf.file_node.path, symbol.name),
+                            count,
+                        );
                     }
                 }
             }
@@ -424,7 +431,8 @@ impl DocpackBuilder {
             let symbol_ids: Vec<String> = symbol_embeddings.keys().cloned().collect();
             let n_symbols = symbol_ids.len();
 
-            if n_symbols <= 500 {  // Only compute if reasonable number
+            if n_symbols <= 500 {
+                // Only compute if reasonable number
                 for (idx, sid) in symbol_ids.iter().enumerate() {
                     let a = &symbol_embeddings[sid];
                     let mut neigh: Vec<(String, f32)> = Vec::new();
@@ -433,7 +441,8 @@ impl DocpackBuilder {
                         let score = Self::cosine(a.as_slice(), b.as_slice());
                         neigh.push((sj.clone(), score));
                     }
-                    neigh.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
+                    neigh
+                        .sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
                     neigh.truncate(3);
                     for (other_id, score) in neigh {
                         self.graph.edges.push(GraphEdgeEntry {
@@ -445,19 +454,24 @@ impl DocpackBuilder {
                     }
                 }
             } else {
-                println!("⚠️  Skipping symbol-to-symbol similarity (too many symbols: {})", n_symbols);
+                println!(
+                    "⚠️  Skipping symbol-to-symbol similarity (too many symbols: {})",
+                    n_symbols
+                );
             }
 
             println!("⚡ Computing symbol-to-chunk links...");
             // 4) Symbol → Chunk top-3 links (by cosine) - skip if product is too large
-            if n_symbols * n_chunks <= 50000 {  // Only compute if reasonable
+            if n_symbols * n_chunks <= 50000 {
+                // Only compute if reasonable
                 for (sid, emb) in &symbol_embeddings {
                     let mut neigh: Vec<(String, f32)> = Vec::new();
                     for i in 0..n_chunks {
                         let score = Self::cosine(emb.as_slice(), self.embeddings[i].as_ref());
                         neigh.push((self.chunks[i].chunk_id.clone(), score));
                     }
-                    neigh.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
+                    neigh
+                        .sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
                     neigh.truncate(3);
                     for (cid, score) in neigh {
                         self.graph.edges.push(GraphEdgeEntry {
@@ -469,7 +483,10 @@ impl DocpackBuilder {
                     }
                 }
             } else {
-                println!("⚠️  Skipping symbol-to-chunk links (too large: {} symbols × {} chunks)", n_symbols, n_chunks);
+                println!(
+                    "⚠️  Skipping symbol-to-chunk links (too large: {} symbols × {} chunks)",
+                    n_symbols, n_chunks
+                );
             }
 
             // 5) Clustering (DBSCAN) on chunk embeddings
@@ -480,13 +497,19 @@ impl DocpackBuilder {
 
             // annotate chunks with cluster metadata
             for (i, cluster_opt) in assignments.iter().enumerate() {
-                if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == self.chunks[i].chunk_id) {
+                if let Some(node) = self
+                    .graph
+                    .nodes
+                    .iter_mut()
+                    .find(|n| n.id == self.chunks[i].chunk_id)
+                {
                     match cluster_opt {
                         Some(cid) => {
                             node.metadata.insert("cluster".to_string(), cid.to_string());
                         }
                         None => {
-                            node.metadata.insert("cluster".to_string(), "noise".to_string());
+                            node.metadata
+                                .insert("cluster".to_string(), "noise".to_string());
                         }
                     }
                 }
@@ -527,8 +550,10 @@ impl DocpackBuilder {
                     let conf = best_count as f32 / total as f32;
                     let symbol_id = format!("symbol:{}:{}", pf.file_node.path, symbol.name);
                     if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == symbol_id) {
-                        node.metadata.insert("cluster".to_string(), best_cluster.to_string());
-                        node.metadata.insert("cluster_confidence".to_string(), format!("{:.3}", conf));
+                        node.metadata
+                            .insert("cluster".to_string(), best_cluster.to_string());
+                        node.metadata
+                            .insert("cluster_confidence".to_string(), format!("{:.3}", conf));
                     }
                 }
             }
@@ -538,70 +563,92 @@ impl DocpackBuilder {
     fn generate_documentation(&mut self, processed_files: &[ProcessedFile]) {
         // Use comprehensive docgen module for documentation generation
         println!("🔍 Generating comprehensive documentation from graph...");
-        
+
         let docgen = DocGenerator::new(processed_files);
         let generated_docs = docgen.generate_all();
-        
+
         // Convert generated docs to serializable format
-        self.documentation.module_summaries = generated_docs.module_summaries.iter().map(|m| {
-            ModuleSummaryData {
+        self.documentation.module_summaries = generated_docs
+            .module_summaries
+            .iter()
+            .map(|m| ModuleSummaryData {
                 module_path: m.module_path.clone(),
                 description: m.description.clone(),
                 file_count: m.file_count,
                 symbol_count: m.symbol_count,
                 lines_of_code: m.lines_of_code,
                 primary_purpose: m.primary_purpose.clone(),
-            }
-        }).collect();
-        
-        self.documentation.file_summaries = generated_docs.file_summaries.iter().map(|f| {
-            FileSummaryData {
+            })
+            .collect();
+
+        self.documentation.file_summaries = generated_docs
+            .file_summaries
+            .iter()
+            .map(|f| FileSummaryData {
                 file_path: f.file_path.clone(),
                 description: f.description.clone(),
                 language: f.language.clone(),
                 lines_total: f.lines_total,
                 lines_code: f.lines_code,
                 complexity_score: f.complexity_score,
-            }
-        }).collect();
-        
-        self.documentation.struct_docs = generated_docs.struct_docs.iter().map(|s| {
-            StructDocData {
+            })
+            .collect();
+
+        self.documentation.struct_docs = generated_docs
+            .struct_docs
+            .iter()
+            .map(|s| StructDocData {
                 name: s.name.clone(),
                 file_path: s.file_path.clone(),
                 description: s.description.clone(),
                 visibility: s.visibility.clone(),
                 field_count: s.fields.len(),
                 method_count: s.methods.len(),
-            }
-        }).collect();
-        
-        self.documentation.function_docs = generated_docs.function_docs.iter().map(|f| {
-            FunctionDocData {
+            })
+            .collect();
+
+        self.documentation.function_docs = generated_docs
+            .function_docs
+            .iter()
+            .map(|f| FunctionDocData {
                 name: f.name.clone(),
                 file_path: f.file_path.clone(),
                 description: f.description.clone(),
                 signature: f.signature.clone(),
                 complexity_estimate: f.complexity_estimate.clone(),
-            }
-        }).collect();
-        
+            })
+            .collect();
+
         self.documentation.dependency_overview = DependencyOverviewData {
-            internal_count: generated_docs.dependency_overview.internal_dependencies.len(),
-            external_count: generated_docs.dependency_overview.external_dependencies.len(),
-            circular_count: generated_docs.dependency_overview.circular_dependencies.len(),
-            summary: generated_docs.dependency_overview.dependency_graph_summary.clone(),
+            internal_count: generated_docs
+                .dependency_overview
+                .internal_dependencies
+                .len(),
+            external_count: generated_docs
+                .dependency_overview
+                .external_dependencies
+                .len(),
+            circular_count: generated_docs
+                .dependency_overview
+                .circular_dependencies
+                .len(),
+            summary: generated_docs
+                .dependency_overview
+                .dependency_graph_summary
+                .clone(),
         };
-        
-        self.documentation.cluster_summaries = generated_docs.cluster_summaries.iter().map(|c| {
-            ClusterSummaryData {
+
+        self.documentation.cluster_summaries = generated_docs
+            .cluster_summaries
+            .iter()
+            .map(|c| ClusterSummaryData {
                 cluster_id: c.cluster_id.clone(),
                 topic_label: c.topic_label.clone(),
                 description: c.description.clone(),
                 symbol_count: c.symbol_count,
-            }
-        }).collect();
-        
+            })
+            .collect();
+
         // Generate architecture overview from comprehensive data
         let arch = &generated_docs.architecture_overview;
         self.documentation.architecture_overview = format!(
@@ -615,20 +662,38 @@ impl DocpackBuilder {
             arch.design_patterns.join(", "),
             arch.module_hierarchy
         );
-        
+
         // Generate highlights
-        self.documentation.highlights.push(format!("📁 {} modules analyzed", self.documentation.module_summaries.len()));
-        self.documentation.highlights.push(format!("📄 {} files documented", self.documentation.file_summaries.len()));
-        self.documentation.highlights.push(format!("🏗️  {} structs documented", self.documentation.struct_docs.len()));
-        self.documentation.highlights.push(format!("⚙️  {} functions documented", self.documentation.function_docs.len()));
-        self.documentation.highlights.push(format!("🔗 {} internal dependencies", self.documentation.dependency_overview.internal_count));
-        self.documentation.highlights.push(format!("📊 {} semantic clusters identified", self.documentation.cluster_summaries.len()));
-        
+        self.documentation.highlights.push(format!(
+            "📁 {} modules analyzed",
+            self.documentation.module_summaries.len()
+        ));
+        self.documentation.highlights.push(format!(
+            "📄 {} files documented",
+            self.documentation.file_summaries.len()
+        ));
+        self.documentation.highlights.push(format!(
+            "🏗️  {} structs documented",
+            self.documentation.struct_docs.len()
+        ));
+        self.documentation.highlights.push(format!(
+            "⚙️  {} functions documented",
+            self.documentation.function_docs.len()
+        ));
+        self.documentation.highlights.push(format!(
+            "🔗 {} internal dependencies",
+            self.documentation.dependency_overview.internal_count
+        ));
+        self.documentation.highlights.push(format!(
+            "📊 {} semantic clusters identified",
+            self.documentation.cluster_summaries.len()
+        ));
+
         // Keep legacy symbol summaries for compatibility
         for pf in processed_files {
             for symbol in &pf.symbols {
                 let summary = self.generate_symbol_summary(symbol);
-                
+
                 self.documentation.summaries.push(SymbolSummary {
                     symbol_id: format!("symbol:{}:{}", pf.file_node.path, symbol.name),
                     summary,
@@ -637,13 +702,25 @@ impl DocpackBuilder {
                 });
             }
         }
-        
+
         println!("✅ Generated comprehensive documentation:");
-        println!("   - {} module summaries", self.documentation.module_summaries.len());
-        println!("   - {} file summaries", self.documentation.file_summaries.len());
+        println!(
+            "   - {} module summaries",
+            self.documentation.module_summaries.len()
+        );
+        println!(
+            "   - {} file summaries",
+            self.documentation.file_summaries.len()
+        );
         println!("   - {} struct docs", self.documentation.struct_docs.len());
-        println!("   - {} function docs", self.documentation.function_docs.len());
-        println!("   - {} cluster summaries", self.documentation.cluster_summaries.len());
+        println!(
+            "   - {} function docs",
+            self.documentation.function_docs.len()
+        );
+        println!(
+            "   - {} cluster summaries",
+            self.documentation.cluster_summaries.len()
+        );
     }
 
     fn generate_symbol_summary(&self, symbol: &SymbolNode) -> String {

@@ -455,6 +455,7 @@ dependencies = [
  "dbscan",
  "ndarray 0.17.1",
  "ort",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",

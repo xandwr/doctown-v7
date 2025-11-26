@@ -244,7 +244,8 @@ impl<'a> DocGenerator<'a> {
             // Find submodules
             let submodules = self.find_submodules(&module_path, &files);
 
-            let description = self.generate_module_description(&module_path, &files, &primary_purpose);
+            let description =
+                self.generate_module_description(&module_path, &files, &primary_purpose);
 
             summaries.push(ModuleSummary {
                 module_path: module_path.clone(),
@@ -272,14 +273,19 @@ impl<'a> DocGenerator<'a> {
             let lines_total = lines.len();
 
             // Calculate line statistics
-            let (lines_code, lines_comment, lines_blank) = self.calculate_line_stats(&text, &pf.file_node.path);
+            let (lines_code, lines_comment, lines_blank) =
+                self.calculate_line_stats(&text, &pf.file_node.path);
 
-            let language = pf.metadata.get("filetype")
+            let language = pf
+                .metadata
+                .get("filetype")
                 .or_else(|| pf.metadata.get("language"))
                 .cloned()
                 .unwrap_or_else(|| "unknown".to_string());
 
-            let symbols: Vec<String> = pf.symbols.iter()
+            let symbols: Vec<String> = pf
+                .symbols
+                .iter()
                 .map(|s| format!("{}::{}", s.kind, s.name))
                 .collect();
 
@@ -324,14 +330,18 @@ impl<'a> DocGenerator<'a> {
                     let derives = self.extract_derives(symbol);
                     let related_structs = self.find_related_structs(symbol);
 
-                    let description = symbol.docs.clone()
-                        .unwrap_or_else(|| self.generate_struct_description(symbol, &fields, &methods));
+                    let description = symbol.docs.clone().unwrap_or_else(|| {
+                        self.generate_struct_description(symbol, &fields, &methods)
+                    });
 
                     struct_docs.push(StructDoc {
                         name: symbol.name.clone(),
                         file_path: pf.file_node.path.clone(),
                         description,
-                        visibility: symbol.visibility.clone().unwrap_or_else(|| "private".to_string()),
+                        visibility: symbol
+                            .visibility
+                            .clone()
+                            .unwrap_or_else(|| "private".to_string()),
                         fields,
                         methods,
                         traits_implemented: traits_impl,
@@ -353,14 +363,21 @@ impl<'a> DocGenerator<'a> {
             for symbol in &pf.symbols {
                 if symbol.kind == "function" {
                     let signature = self.build_function_signature(symbol);
-                    
-                    let parameters: Vec<ParamInfo> = symbol.parameters.as_ref().map(|params| {
-                        params.iter().map(|(name, ptype)| ParamInfo {
-                            name: name.clone(),
-                            param_type: ptype.clone(),
-                            description: String::new(), // Could be extracted from docs
-                        }).collect()
-                    }).unwrap_or_else(Vec::new);
+
+                    let parameters: Vec<ParamInfo> = symbol
+                        .parameters
+                        .as_ref()
+                        .map(|params| {
+                            params
+                                .iter()
+                                .map(|(name, ptype)| ParamInfo {
+                                    name: name.clone(),
+                                    param_type: ptype.clone(),
+                                    description: String::new(), // Could be extracted from docs
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_else(Vec::new);
 
                     let is_async = symbol.modifiers.contains(&"async".to_string());
                     let is_unsafe = symbol.modifiers.contains(&"unsafe".to_string());
@@ -370,8 +387,9 @@ impl<'a> DocGenerator<'a> {
 
                     let complexity = self.estimate_function_complexity(symbol, &calls);
 
-                    let description = symbol.docs.clone()
-                        .unwrap_or_else(|| self.generate_function_description(symbol, &parameters, &calls));
+                    let description = symbol.docs.clone().unwrap_or_else(|| {
+                        self.generate_function_description(symbol, &parameters, &calls)
+                    });
 
                     function_docs.push(FunctionDoc {
                         name: symbol.name.clone(),
@@ -379,8 +397,14 @@ impl<'a> DocGenerator<'a> {
                         description,
                         signature,
                         parameters,
-                        return_type: symbol.return_type.clone().unwrap_or_else(|| "()".to_string()),
-                        visibility: symbol.visibility.clone().unwrap_or_else(|| "private".to_string()),
+                        return_type: symbol
+                            .return_type
+                            .clone()
+                            .unwrap_or_else(|| "()".to_string()),
+                        visibility: symbol
+                            .visibility
+                            .clone()
+                            .unwrap_or_else(|| "private".to_string()),
                         is_async,
                         is_unsafe,
                         calls,
@@ -398,14 +422,18 @@ impl<'a> DocGenerator<'a> {
     fn generate_architecture_overview(&self) -> ArchitectureOverview {
         let total_files = self.processed_files.len();
         let total_symbols: usize = self.processed_files.iter().map(|pf| pf.symbols.len()).sum();
-        let total_lines: usize = self.processed_files.iter().map(|pf| {
-            String::from_utf8_lossy(&pf.original_bytes).lines().count()
-        }).sum();
+        let total_lines: usize = self
+            .processed_files
+            .iter()
+            .map(|pf| String::from_utf8_lossy(&pf.original_bytes).lines().count())
+            .sum();
 
         // Language breakdown
         let mut language_breakdown: HashMap<String, usize> = HashMap::new();
         for pf in self.processed_files {
-            let lang = pf.metadata.get("filetype")
+            let lang = pf
+                .metadata
+                .get("filetype")
                 .or_else(|| pf.metadata.get("language"))
                 .cloned()
                 .unwrap_or_else(|| "unknown".to_string());
@@ -464,7 +492,10 @@ impl<'a> DocGenerator<'a> {
                 // Assuming cluster info would be in metadata
                 // This is a placeholder - actual implementation would use embedding clusters
                 let cluster_id = format!("cluster_{}", symbol.kind);
-                clusters.entry(cluster_id).or_default().push(symbol.name.clone());
+                clusters
+                    .entry(cluster_id)
+                    .or_default()
+                    .push(symbol.name.clone());
             }
         }
 
@@ -493,7 +524,8 @@ impl<'a> DocGenerator<'a> {
     // ===== Helper methods =====
 
     fn infer_module_purpose(&self, files: &[&ProcessedFile]) -> String {
-        let symbol_kinds: Vec<String> = files.iter()
+        let symbol_kinds: Vec<String> = files
+            .iter()
             .flat_map(|f| f.symbols.iter().map(|s| s.kind.clone()))
             .collect();
 
@@ -501,7 +533,8 @@ impl<'a> DocGenerator<'a> {
             "Interface definitions and abstractions".to_string()
         } else if symbol_kinds.iter().filter(|k| k == &"struct").count() > symbol_kinds.len() / 2 {
             "Data structures and types".to_string()
-        } else if symbol_kinds.iter().filter(|k| k == &"function").count() > symbol_kinds.len() / 2 {
+        } else if symbol_kinds.iter().filter(|k| k == &"function").count() > symbol_kinds.len() / 2
+        {
             "Utility functions and operations".to_string()
         } else {
             "Mixed functionality module".to_string()
@@ -525,7 +558,7 @@ impl<'a> DocGenerator<'a> {
 
     fn find_submodules(&self, parent: &str, _files: &[&ProcessedFile]) -> Vec<String> {
         let mut submodules = HashSet::new();
-        
+
         for pf in self.processed_files {
             if let Some(dir) = std::path::Path::new(&pf.file_node.path).parent() {
                 let dir_str = dir.to_str().unwrap_or("");
@@ -538,11 +571,16 @@ impl<'a> DocGenerator<'a> {
                 }
             }
         }
-        
+
         submodules.into_iter().collect()
     }
 
-    fn generate_module_description(&self, module_path: &str, files: &[&ProcessedFile], purpose: &str) -> String {
+    fn generate_module_description(
+        &self,
+        module_path: &str,
+        files: &[&ProcessedFile],
+        purpose: &str,
+    ) -> String {
         format!(
             "Module '{}' contains {} file(s) implementing {}. Total symbols: {}",
             module_path,
@@ -562,7 +600,7 @@ impl<'a> DocGenerator<'a> {
 
         for line in text.lines() {
             let trimmed = line.trim();
-            
+
             if trimmed.is_empty() {
                 blank += 1;
                 continue;
@@ -607,14 +645,16 @@ impl<'a> DocGenerator<'a> {
     }
 
     fn extract_exports(&self, pf: &ProcessedFile) -> Vec<String> {
-        pf.symbols.iter()
+        pf.symbols
+            .iter()
             .filter(|s| s.visibility.as_ref().map(|v| v == "pub").unwrap_or(false))
             .map(|s| s.name.clone())
             .collect()
     }
 
     fn extract_file_dependencies(&self, pf: &ProcessedFile) -> Vec<String> {
-        self.all_edges.iter()
+        self.all_edges
+            .iter()
             .filter(|e| e.src == pf.file_node.path && matches!(e.kind, GraphEdgeKind::FileToFile))
             .map(|e| e.dst.clone())
             .collect()
@@ -624,7 +664,7 @@ impl<'a> DocGenerator<'a> {
         let symbol_count = pf.symbols.len() as f32;
         let chunk_count = pf.chunks.len() as f32;
         let edge_count = pf.graph_edges.len() as f32;
-        
+
         (symbol_count * 0.4 + chunk_count * 0.3 + edge_count * 0.3) / 10.0
     }
 
@@ -643,41 +683,63 @@ impl<'a> DocGenerator<'a> {
         for symbol in symbols {
             *counts.entry(symbol.kind.clone()).or_default() += 1;
         }
-        
-        counts.iter()
+
+        counts
+            .iter()
             .map(|(k, v)| format!("{} {}", v, k))
             .collect::<Vec<_>>()
             .join(", ")
     }
 
-    fn extract_struct_fields(&self, pf: &ProcessedFile, struct_symbol: &SymbolNode) -> Vec<FieldInfo> {
-        pf.symbols.iter()
+    fn extract_struct_fields(
+        &self,
+        pf: &ProcessedFile,
+        struct_symbol: &SymbolNode,
+    ) -> Vec<FieldInfo> {
+        pf.symbols
+            .iter()
             .filter(|s| s.kind == "field" && s.parent.as_ref() == Some(&struct_symbol.name))
             .map(|field| FieldInfo {
                 name: field.name.clone(),
-                field_type: field.field_type.clone().unwrap_or_else(|| "unknown".to_string()),
-                visibility: field.visibility.clone().unwrap_or_else(|| "private".to_string()),
+                field_type: field
+                    .field_type
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                visibility: field
+                    .visibility
+                    .clone()
+                    .unwrap_or_else(|| "private".to_string()),
                 description: field.docs.clone().unwrap_or_default(),
             })
             .collect()
     }
 
     fn find_struct_methods(&self, pf: &ProcessedFile, struct_symbol: &SymbolNode) -> Vec<String> {
-        pf.symbols.iter()
+        pf.symbols
+            .iter()
             .filter(|s| s.kind == "function" && s.parent.as_ref() == Some(&struct_symbol.name))
             .map(|m| m.name.clone())
             .collect()
     }
 
-    fn find_trait_implementations(&self, pf: &ProcessedFile, struct_symbol: &SymbolNode) -> Vec<String> {
-        pf.symbols.iter()
-            .filter(|s| s.kind == "impl" && s.name.contains(&struct_symbol.name) && s.trait_impl.is_some())
+    fn find_trait_implementations(
+        &self,
+        pf: &ProcessedFile,
+        struct_symbol: &SymbolNode,
+    ) -> Vec<String> {
+        pf.symbols
+            .iter()
+            .filter(|s| {
+                s.kind == "impl" && s.name.contains(&struct_symbol.name) && s.trait_impl.is_some()
+            })
             .filter_map(|impl_block| impl_block.trait_impl.clone())
             .collect()
     }
 
     fn extract_derives(&self, symbol: &SymbolNode) -> Vec<String> {
-        symbol.attributes.iter()
+        symbol
+            .attributes
+            .iter()
             .filter(|attr| attr.contains("derive"))
             .map(|attr| attr.clone())
             .collect()
@@ -688,7 +750,12 @@ impl<'a> DocGenerator<'a> {
         Vec::new()
     }
 
-    fn generate_struct_description(&self, symbol: &SymbolNode, fields: &[FieldInfo], methods: &[String]) -> String {
+    fn generate_struct_description(
+        &self,
+        symbol: &SymbolNode,
+        fields: &[FieldInfo],
+        methods: &[String],
+    ) -> String {
         format!(
             "Struct '{}' with {} field(s) and {} method(s)",
             symbol.name,
@@ -699,38 +766,39 @@ impl<'a> DocGenerator<'a> {
 
     fn build_function_signature(&self, symbol: &SymbolNode) -> String {
         let mut sig = String::new();
-        
+
         if let Some(vis) = &symbol.visibility {
             sig.push_str(vis);
             sig.push(' ');
         }
-        
+
         for modifier in &symbol.modifiers {
             sig.push_str(modifier);
             sig.push(' ');
         }
-        
+
         sig.push_str("fn ");
         sig.push_str(&symbol.name);
-        
+
         if let Some(generics) = &symbol.generics {
             sig.push_str(generics);
         }
-        
+
         sig.push('(');
         if let Some(params) = &symbol.parameters {
-            let param_strs: Vec<String> = params.iter()
+            let param_strs: Vec<String> = params
+                .iter()
                 .map(|(name, ptype)| format!("{}: {}", name, ptype))
                 .collect();
             sig.push_str(&param_strs.join(", "));
         }
         sig.push(')');
-        
+
         if let Some(ret) = &symbol.return_type {
             sig.push_str(" -> ");
             sig.push_str(ret);
         }
-        
+
         sig
     }
 
@@ -747,9 +815,9 @@ impl<'a> DocGenerator<'a> {
     fn estimate_function_complexity(&self, symbol: &SymbolNode, calls: &[String]) -> String {
         let param_count = symbol.parameters.as_ref().map(|p| p.len()).unwrap_or(0);
         let call_count = calls.len();
-        
+
         let score = param_count + call_count * 2;
-        
+
         if score < 5 {
             "Low".to_string()
         } else if score < 15 {
@@ -759,7 +827,12 @@ impl<'a> DocGenerator<'a> {
         }
     }
 
-    fn generate_function_description(&self, symbol: &SymbolNode, params: &[ParamInfo], _calls: &[String]) -> String {
+    fn generate_function_description(
+        &self,
+        symbol: &SymbolNode,
+        params: &[ParamInfo],
+        _calls: &[String],
+    ) -> String {
         format!(
             "Function '{}' with {} parameter(s)",
             symbol.name,
@@ -769,7 +842,7 @@ impl<'a> DocGenerator<'a> {
 
     fn build_module_hierarchy(&self) -> String {
         let mut modules = HashSet::new();
-        
+
         for pf in self.processed_files {
             if let Some(parent) = std::path::Path::new(&pf.file_node.path).parent() {
                 if let Some(parent_str) = parent.to_str() {
@@ -779,7 +852,7 @@ impl<'a> DocGenerator<'a> {
                 }
             }
         }
-        
+
         let mut sorted: Vec<_> = modules.into_iter().collect();
         sorted.sort();
         sorted.join(" → ")
@@ -788,50 +861,59 @@ impl<'a> DocGenerator<'a> {
     fn identify_core_components(&self) -> Vec<CoreComponent> {
         // Identify files with high connectivity as core components
         let mut component_edges: HashMap<String, usize> = HashMap::new();
-        
+
         for edge in &self.all_edges {
             *component_edges.entry(edge.src.clone()).or_default() += 1;
             *component_edges.entry(edge.dst.clone()).or_default() += 1;
         }
-        
+
         let mut sorted: Vec<_> = component_edges.into_iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(&a.1));
-        
-        sorted.iter().take(5).map(|(name, count)| {
-            CoreComponent {
+
+        sorted
+            .iter()
+            .take(5)
+            .map(|(name, count)| CoreComponent {
                 name: name.clone(),
                 purpose: "Core component with high connectivity".to_string(),
                 key_files: vec![name.clone()],
                 interaction_count: *count,
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     fn detect_design_patterns(&self) -> Vec<String> {
         let mut patterns = Vec::new();
-        
+
         // Detect common patterns based on symbol analysis
-        let has_traits = self.processed_files.iter()
+        let has_traits = self
+            .processed_files
+            .iter()
             .any(|pf| pf.symbols.iter().any(|s| s.kind == "trait"));
-        
+
         if has_traits {
             patterns.push("Trait-based abstraction".to_string());
         }
-        
-        let has_builders = self.processed_files.iter()
-            .any(|pf| pf.symbols.iter().any(|s| s.name.to_lowercase().contains("builder")));
-        
+
+        let has_builders = self.processed_files.iter().any(|pf| {
+            pf.symbols
+                .iter()
+                .any(|s| s.name.to_lowercase().contains("builder"))
+        });
+
         if has_builders {
             patterns.push("Builder pattern".to_string());
         }
-        
+
         patterns
     }
 
     fn infer_architectural_style(&self) -> String {
-        let has_modules = self.processed_files.iter()
+        let has_modules = self
+            .processed_files
+            .iter()
             .any(|pf| pf.symbols.iter().any(|s| s.kind == "mod"));
-        
+
         if has_modules {
             "Modular architecture".to_string()
         } else {
@@ -840,8 +922,14 @@ impl<'a> DocGenerator<'a> {
     }
 
     fn extract_internal_dependencies(&self) -> Vec<DependencyEdge> {
-        self.all_edges.iter()
-            .filter(|e| matches!(e.kind, GraphEdgeKind::FileToFile | GraphEdgeKind::SymbolToSymbol))
+        self.all_edges
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    GraphEdgeKind::FileToFile | GraphEdgeKind::SymbolToSymbol
+                )
+            })
             .map(|e| DependencyEdge {
                 from: e.src.clone(),
                 to: e.dst.clone(),
@@ -859,7 +947,7 @@ impl<'a> DocGenerator<'a> {
     fn detect_circular_dependencies(&self, deps: &[DependencyEdge]) -> Vec<CircularDep> {
         // Simple cycle detection placeholder
         let mut cycles = Vec::new();
-        
+
         for dep in deps {
             // Check if there's a reverse edge
             if deps.iter().any(|d| d.from == dep.to && d.to == dep.from) {
@@ -869,18 +957,18 @@ impl<'a> DocGenerator<'a> {
                 });
             }
         }
-        
+
         cycles.truncate(5); // Top 5 cycles
         cycles
     }
 
     fn calculate_dependency_popularity(&self, deps: &[DependencyEdge]) -> Vec<(String, usize)> {
         let mut popularity: HashMap<String, usize> = HashMap::new();
-        
+
         for dep in deps {
             *popularity.entry(dep.to.clone()).or_default() += 1;
         }
-        
+
         let mut sorted: Vec<_> = popularity.into_iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(&a.1));
         sorted.truncate(10);
@@ -889,16 +977,19 @@ impl<'a> DocGenerator<'a> {
 
     fn find_least_coupled_modules(&self) -> Vec<String> {
         let mut edge_counts: HashMap<String, usize> = HashMap::new();
-        
+
         for pf in self.processed_files {
-            edge_counts.insert(pf.file_node.path.clone(), 
-                pf.graph_edges.len());
+            edge_counts.insert(pf.file_node.path.clone(), pf.graph_edges.len());
         }
-        
+
         let mut sorted: Vec<_> = edge_counts.into_iter().collect();
         sorted.sort_by(|a, b| a.1.cmp(&b.1));
-        
-        sorted.iter().take(5).map(|(path, _)| path.clone()).collect()
+
+        sorted
+            .iter()
+            .take(5)
+            .map(|(path, _)| path.clone())
+            .collect()
     }
 
     fn infer_topic_label(&self, symbols: &[String]) -> String {
