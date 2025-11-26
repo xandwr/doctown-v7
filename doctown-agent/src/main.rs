@@ -1,7 +1,10 @@
 // main.rs - Doctown Agent MCP server entry point
 
 use anyhow::Result;
-use doctown_agent::{DEFAULT_MCP_PORT, McpServer, WebSocketConfig, serve_websocket};
+use doctown_agent::{
+    DEFAULT_MCP_PORT, DEFAULT_MCP_SSE_PORT, McpServer, SseConfig, WebSocketConfig, serve_sse,
+    serve_websocket,
+};
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -20,16 +23,27 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    // Check if WebSocket mode is requested
+    // Check transport mode
     let use_websocket = args.iter().any(|arg| arg == "--websocket" || arg == "-w");
+    let use_sse = args.iter().any(|arg| arg == "--sse" || arg == "-s");
     let custom_port = args
         .iter()
         .position(|arg| arg == "--port" || arg == "-p")
         .and_then(|i| args.get(i + 1))
         .and_then(|p| p.parse::<u16>().ok());
 
-    if use_websocket {
-        // WebSocket mode
+    if use_sse {
+        // SSE mode (recommended for MCP spec compliance)
+        let config = SseConfig {
+            host: "0.0.0.0".to_string(),
+            port: custom_port.unwrap_or(DEFAULT_MCP_SSE_PORT),
+            docpack_path,
+        };
+
+        eprintln!("Starting MCP server in SSE mode...");
+        serve_sse(config).await?;
+    } else if use_websocket {
+        // WebSocket mode (for compatibility)
         let config = WebSocketConfig {
             host: "0.0.0.0".to_string(),
             port: custom_port.unwrap_or(DEFAULT_MCP_PORT),
@@ -58,32 +72,37 @@ fn print_usage() {
     eprintln!("  doctown-agent <path-to-docpack> [OPTIONS]");
     eprintln!();
     eprintln!("OPTIONS:");
-    eprintln!("  --websocket, -w     Start in WebSocket mode (default: stdio)");
-    eprintln!("  --port, -p <PORT>   WebSocket port (default: 8765)");
+    eprintln!("  --sse, -s           Start in SSE mode (MCP standard, recommended)");
+    eprintln!("  --websocket, -w     Start in WebSocket mode");
+    eprintln!("  --port, -p <PORT>   Server port (default: 8765)");
     eprintln!();
     eprintln!("MODES:");
     eprintln!("  Stdio mode (default):");
     eprintln!("    Exposes MCP server via JSON-RPC over stdin/stdout");
     eprintln!("    Usage: doctown-agent my-project.docpack");
     eprintln!();
+    eprintln!("  SSE mode (recommended for remote access):");
+    eprintln!("    Exposes MCP server via HTTP with Server-Sent Events");
+    eprintln!("    Follows MCP specification for HTTP transport");
+    eprintln!("    Usage: doctown-agent my-project.docpack --sse");
+    eprintln!();
     eprintln!("  WebSocket mode:");
-    eprintln!("    Exposes MCP server via WebSocket on port 8765 (or custom port)");
+    eprintln!("    Exposes MCP server via WebSocket on port 8765");
     eprintln!("    Usage: doctown-agent my-project.docpack --websocket");
-    eprintln!("    Usage: doctown-agent my-project.docpack -w --port 9000");
     eprintln!();
     eprintln!("EXAMPLES:");
     eprintln!("  # Stdio mode for local agent");
     eprintln!("  doctown-agent ./my-project.docpack");
     eprintln!();
-    eprintln!("  # WebSocket mode on default port (8765)");
-    eprintln!("  doctown-agent ./my-project.docpack --websocket");
+    eprintln!("  # SSE mode on default port (8765) - MCP standard");
+    eprintln!("  doctown-agent ./my-project.docpack --sse");
     eprintln!();
     eprintln!("  # WebSocket mode on custom port");
     eprintln!("  doctown-agent ./my-project.docpack -w -p 9000");
     eprintln!();
     eprintln!("DEPLOYMENT:");
-    eprintln!("  For RunPod or cloud deployment, use WebSocket mode:");
+    eprintln!("  For RunPod or cloud deployment, use SSE mode:");
     eprintln!("  1. Deploy container with: --network=public");
-    eprintln!("  2. Run: doctown-agent /data/project.docpack --websocket");
-    eprintln!("  3. Connect clients to: ws://<runpod-ip>:8765/");
+    eprintln!("  2. Run: doctown-agent /data/project.docpack --sse");
+    eprintln!("  3. Connect clients to: http://<runpod-ip>:8765/");
 }

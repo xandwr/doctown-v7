@@ -113,27 +113,33 @@ async fn handle_connection(
 
         match msg {
             Message::Text(text) => {
+                eprintln!("Received message from {}: {}", peer_addr, text);
                 // Parse JSON-RPC request
                 let response = match serde_json::from_str::<JsonRpcRequest>(&text) {
                     Ok(request) => {
+                        eprintln!("Parsed request: method={}, id={:?}", request.method, request.id);
                         // Handle the request using the MCP server
                         let mut server = mcp_server.lock().await;
                         handle_request(&mut server, request)
                     }
-                    Err(e) => JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: None,
-                        result: None,
-                        error: Some(super::server::JsonRpcError {
-                            code: -32700,
-                            message: format!("Parse error: {}", e),
-                            data: None,
-                        }),
-                    },
+                    Err(e) => {
+                        eprintln!("Parse error: {}", e);
+                        JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: None,
+                            result: None,
+                            error: Some(super::server::JsonRpcError {
+                                code: -32700,
+                                message: format!("Parse error: {}", e),
+                                data: None,
+                            }),
+                        }
+                    }
                 };
 
                 // Send response back
                 let response_json = serde_json::to_string(&response)?;
+                eprintln!("Sending response to {}: {}", peer_addr, response_json);
                 ws_sender
                     .send(Message::Text(response_json.into()))
                     .await
