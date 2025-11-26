@@ -146,6 +146,74 @@ fn generate_subsystem_summary(
     )
 }
 
+/// Build cross-references: scan chunks to find test and documentation mentions of symbols
+fn build_cross_references(
+    graph: &ProjectGraph,
+) -> (HashMap<String, Vec<String>>, HashMap<String, Vec<String>>) {
+    let mut test_refs: HashMap<String, Vec<String>> = HashMap::new();
+    let mut doc_refs: HashMap<String, Vec<String>> = HashMap::new();
+
+    // Build a set of all symbol names for quick lookup
+    let symbol_names: HashSet<String> = graph.symbols.iter().map(|s| s.name.clone()).collect();
+
+    // Scan through all chunks to find mentions
+    for (idx, chunk) in graph.chunks.iter().enumerate() {
+        if let Some(file_path) = graph.chunk_to_file.get(&idx) {
+            let is_test = file_path.contains("test")
+                || file_path.contains("tests/")
+                || file_path.contains("_test.rs")
+                || file_path.ends_with("tests.rs");
+
+            let is_doc = file_path.ends_with(".md")
+                || file_path.ends_with(".txt")
+                || file_path.contains("README")
+                || file_path.contains("doc/")
+                || file_path.contains("docs/");
+
+            if !is_test && !is_doc {
+                continue; // Only interested in test and doc files
+            }
+
+            let text = &chunk.text;
+
+            // Find mentions of each symbol in this chunk
+            for symbol_name in &symbol_names {
+                // Simple word boundary check - look for the symbol name as a word
+                if text.contains(symbol_name) {
+                    // Verify it's a word boundary (not part of another identifier)
+                    let pattern = format!(r"\b{}\b", regex::escape(symbol_name));
+                    if regex::Regex::new(&pattern).ok().map_or(false, |re| re.is_match(text)) {
+                        let location = format!("{}:{}", file_path, chunk.id.0);
+
+                        if is_test {
+                            test_refs.entry(symbol_name.clone())
+                                .or_insert_with(Vec::new)
+                                .push(location.clone());
+                        }
+                        if is_doc {
+                            doc_refs.entry(symbol_name.clone())
+                                .or_insert_with(Vec::new)
+                                .push(location.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Deduplicate and sort
+    for refs in test_refs.values_mut() {
+        refs.sort();
+        refs.dedup();
+    }
+    for refs in doc_refs.values_mut() {
+        refs.sort();
+        refs.dedup();
+    }
+
+    (test_refs, doc_refs)
+}
+
 /// Build comprehensive symbol table with all metadata agents need
 fn build_symbol_table(
     graph: &ProjectGraph,
@@ -187,6 +255,9 @@ fn build_symbol_table(
         }
     }
 
+    // Build cross-references: find which test files and docs mention each symbol
+    let (test_refs, doc_refs) = build_cross_references(graph);
+
     // Build symbol table from graph symbols
     for symbol in &graph.symbols {
         let subsystem = symbol_to_subsystem
@@ -211,6 +282,10 @@ fn build_symbol_table(
             .cloned()
             .unwrap_or_default();
 
+        // Get cross-references for this symbol
+        let used_in_tests = test_refs.get(&symbol.name).cloned();
+        let mentioned_in_docs = doc_refs.get(&symbol.name).cloned();
+
         symbols.insert(
             symbol.name.clone(),
             SymbolEntry {
@@ -222,6 +297,8 @@ fn build_symbol_table(
                 summary,
                 related_symbols,
                 embedding_index: None, // Could be populated if we track symbol->chunk->embedding mapping
+                used_in_tests,
+                mentioned_in_docs,
             },
         );
     }

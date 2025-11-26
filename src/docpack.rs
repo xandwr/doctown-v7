@@ -188,6 +188,10 @@ pub struct SymbolEntry {
     pub related_symbols: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding_index: Option<usize>, // Index into embeddings array for semantic search
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_in_tests: Option<Vec<String>>, // Test files that reference this symbol
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentioned_in_docs: Option<Vec<String>>, // Documentation files that mention this symbol
 }
 
 /// Quick-start navigation hints for agents
@@ -207,6 +211,7 @@ pub struct DocpackBuilder {
     embeddings: Vec<crate::ingest::Embedding>,
     graph: GraphFile,
     documentation: DocumentationFile,
+    processed_files: Vec<crate::ingest::ProcessedFile>,
 }
 
 impl DocpackBuilder {
@@ -251,6 +256,7 @@ impl DocpackBuilder {
                 },
                 cluster_summaries: Vec::new(),
             },
+            processed_files: Vec::new(),
         }
     }
 
@@ -275,6 +281,9 @@ impl DocpackBuilder {
         self.manifest.total_files = processed_files.len();
         self.manifest.total_chunks = self.chunks.len();
         self.manifest.embedding_dimensions = self.embeddings.first().map(|e| e.len()).unwrap_or(0);
+
+        // Store processed files for later writing to zip
+        self.processed_files = processed_files;
 
         Ok(())
     }
@@ -916,6 +925,13 @@ impl DocpackBuilder {
             for &value in embedding.as_ref() {
                 zip.write_all(&value.to_le_bytes())?;
             }
+        }
+
+        // Write source files to source/ directory
+        for pf in &self.processed_files {
+            let source_path = format!("source/{}", pf.file_node.path.trim_start_matches('/'));
+            zip.start_file(source_path, options)?;
+            zip.write_all(&pf.original_bytes)?;
         }
 
         // Write README.md
