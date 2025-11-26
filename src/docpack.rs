@@ -541,7 +541,7 @@ impl DocpackBuilder {
                 for (idx, sid) in symbol_ids.iter().enumerate() {
                     let a = &symbol_embeddings[sid];
                     let mut neigh: Vec<(String, f32)> = Vec::new();
-                    for (jdx, sj) in symbol_ids.iter().enumerate().skip(idx + 1) {
+                    for (_jdx, sj) in symbol_ids.iter().enumerate().skip(idx + 1) {
                         let b = &symbol_embeddings[sj];
                         let score = Self::cosine(a.as_slice(), b.as_slice());
                         neigh.push((sj.clone(), score));

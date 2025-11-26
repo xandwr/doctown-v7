@@ -4,7 +4,7 @@
 // into a curated index designed for AI agents to navigate codebases efficiently.
 
 use crate::docpack::{AgentIndex, AgentQuickstart, Subsystem, SymbolEntry};
-use crate::ingest::{GraphEdge, GraphEdgeKind, ProjectGraph, SymbolNode};
+use crate::ingest::{GraphEdgeKind, ProjectGraph, SymbolNode};
 use crate::llm::LlmEngine;
 use std::collections::{HashMap, HashSet};
 

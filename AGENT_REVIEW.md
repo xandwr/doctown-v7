@@ -1,8 +1,3 @@
-6. "Explain Like I'm 5" Mode
-// get_symbol("EmbeddingEngine", explain=true)
-// Returns: "This is the thing that turns text into numbers so we can compare meanings"
-LLM-generated plain-English summaries of what things do and WHY they exist.
-
 8. Docpack Composition
 doctown install axios  # grabs docpack from registry
 doctown link ./my-lib.docpack  # local dev

@@ -1,16 +1,10 @@
 // main.rs
 
-mod agent;
-mod community;
-mod docgen;
-mod docpack;
-mod embedding;
-mod ingest;
-mod nlp;
+use doctown::{agent, community, docgen, docpack, embedding, ingest, nlp};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use ingest::{code_file_stats, load_zip, unzip_to_memory_parallel};
+use doctown::ingest::{code_file_stats, load_zip, unzip_to_memory_parallel};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -213,8 +207,8 @@ async fn main() -> Result<()> {
     report.zip_loaded = Some(Utc::now());
 
     // To enable embeddings, create an EmbeddingEngine:
-    use embedding::EmbeddingEngine;
-    let mut engine = EmbeddingEngine::new(
+    use doctown::embedding::EmbeddingEngine;
+    let mut engine = doctown::embedding::EmbeddingEngine::new(
         "models/minilm-l6/model.onnx",
         "models/minilm-l6/tokenizer.json",
     )?;
@@ -581,7 +575,7 @@ async fn main() -> Result<()> {
     // Recompute chunk -> community mapping so we can merge semantic blocks by cluster
     // Build similarity edges and run Louvain locally to get chunk indices -> community id
     {
-        use community::{Louvain, build_similarity_edges};
+        use doctown::community::{Louvain, build_similarity_edges};
         let n_chunks = graph.chunk_embeddings.len();
         if n_chunks > 0 {
             let sim_edges = build_similarity_edges(&graph.chunk_embeddings, 0.5);
