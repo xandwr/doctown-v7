@@ -36,6 +36,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dbscan = "0.3.1"
 rayon = "1.10"
 regex = "1.11"
+sha2 = "0.10"
 
 [features]
 pos = []

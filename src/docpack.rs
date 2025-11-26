@@ -20,6 +20,10 @@ pub struct Manifest {
     pub total_chunks: usize,
     pub embedding_dimensions: usize,
     pub generator: GeneratorInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_hashes: Option<HashMap<String, String>>, // file_path -> SHA256 hash
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>, // Git commit hash when docpack was built
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +196,18 @@ pub struct SymbolEntry {
     pub used_in_tests: Option<Vec<String>>, // Test files that reference this symbol
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mentioned_in_docs: Option<Vec<String>>, // Documentation files that mention this symbol
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_examples: Option<Vec<UsageExample>>, // Actual code examples showing how this symbol is used
+}
+
+/// A concrete usage example of a symbol
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageExample {
+    pub file: String,          // File where the example is found
+    pub context: String,       // Surrounding code showing how the symbol is used
+    pub example_type: String,  // "test", "doc", "usage"
+    pub line_start: usize,     // Starting line number
+    pub line_end: usize,       // Ending line number
 }
 
 /// Quick-start navigation hints for agents
@@ -232,6 +248,8 @@ impl DocpackBuilder {
                     embedder: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
                     gpu_used: false, // TODO: detect actual GPU usage
                 },
+                file_hashes: None,
+                git_commit: None,
             },
             file_structure: Vec::new(),
             chunks: Vec::new(),
@@ -286,6 +304,36 @@ impl DocpackBuilder {
         self.processed_files = processed_files;
 
         Ok(())
+    }
+
+    /// Compute SHA256 hashes for all processed files
+    pub fn compute_file_hashes(&mut self) {
+        use sha2::{Sha256, Digest};
+        let mut hashes = HashMap::new();
+
+        for pf in &self.processed_files {
+            let mut hasher = Sha256::new();
+            hasher.update(&pf.original_bytes);
+            let hash = format!("{:x}", hasher.finalize());
+            hashes.insert(pf.file_node.path.clone(), hash);
+        }
+
+        self.manifest.file_hashes = Some(hashes);
+    }
+
+    /// Detect and store the current git commit hash
+    pub fn detect_git_commit(&mut self) {
+        // Try to get the current git commit using git command
+        if let Ok(output) = std::process::Command::new("git")
+            .args(&["rev-parse", "HEAD"])
+            .output()
+        {
+            if output.status.success() {
+                if let Ok(commit) = String::from_utf8(output.stdout) {
+                    self.manifest.git_commit = Some(commit.trim().to_string());
+                }
+            }
+        }
     }
 
     fn build_file_structure(&mut self, processed_files: &[ProcessedFile]) {

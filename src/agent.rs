@@ -214,6 +214,124 @@ fn build_cross_references(
     (test_refs, doc_refs)
 }
 
+/// Extract concrete usage examples for each symbol from test files and documentation
+fn extract_usage_examples(
+    graph: &ProjectGraph,
+) -> HashMap<String, Vec<crate::docpack::UsageExample>> {
+    use crate::docpack::UsageExample;
+    let mut examples: HashMap<String, Vec<UsageExample>> = HashMap::new();
+
+    // Build a set of all symbol names for quick lookup
+    let symbol_names: HashSet<String> = graph.symbols.iter().map(|s| s.name.clone()).collect();
+
+    // Scan through all chunks to find usage examples
+    for (idx, chunk) in graph.chunks.iter().enumerate() {
+        if let Some(file_path) = graph.chunk_to_file.get(&idx) {
+            // Determine the type of example
+            let is_test = file_path.contains("test")
+                || file_path.contains("tests/")
+                || file_path.contains("_test.rs")
+                || file_path.ends_with("tests.rs");
+
+            let is_doc = file_path.ends_with(".md")
+                || file_path.ends_with(".txt")
+                || file_path.contains("README")
+                || file_path.contains("doc/")
+                || file_path.contains("docs/");
+
+            if !is_test && !is_doc {
+                continue; // Only extract examples from test and doc files for now
+            }
+
+            let example_type = if is_test { "test" } else { "doc" };
+            let text = &chunk.text;
+
+            // Find mentions of each symbol in this chunk
+            for symbol_name in &symbol_names {
+                if text.contains(symbol_name) {
+                    // Verify it's a word boundary (not part of another identifier)
+                    let pattern = format!(r"\b{}\b", regex::escape(symbol_name));
+                    if regex::Regex::new(&pattern).ok().map_or(false, |re| re.is_match(text)) {
+                        // Extract a context snippet around the symbol usage
+                        let context = extract_context_snippet(text, symbol_name, 150);
+
+                        // Parse line numbers from chunk ID if available
+                        let (line_start, line_end) = parse_chunk_lines(&chunk.id.0);
+
+                        let example = UsageExample {
+                            file: file_path.clone(),
+                            context,
+                            example_type: example_type.to_string(),
+                            line_start,
+                            line_end,
+                        };
+
+                        examples.entry(symbol_name.clone())
+                            .or_insert_with(Vec::new)
+                            .push(example);
+                    }
+                }
+            }
+        }
+    }
+
+    // Limit to top 5 examples per symbol and deduplicate
+    for examples_list in examples.values_mut() {
+        examples_list.sort_by(|a, b| {
+            // Prioritize tests over docs
+            match (a.example_type.as_str(), b.example_type.as_str()) {
+                ("test", "doc") => std::cmp::Ordering::Less,
+                ("doc", "test") => std::cmp::Ordering::Greater,
+                _ => a.file.cmp(&b.file),
+            }
+        });
+        examples_list.truncate(5);
+    }
+
+    examples
+}
+
+/// Extract a context snippet around a symbol usage
+fn extract_context_snippet(text: &str, symbol_name: &str, max_chars: usize) -> String {
+    // Find the position of the symbol
+    if let Some(pos) = text.find(symbol_name) {
+        // Extract surrounding context
+        let start = pos.saturating_sub(max_chars / 2);
+        let end = (pos + symbol_name.len() + max_chars / 2).min(text.len());
+
+        let mut snippet = text[start..end].to_string();
+
+        // Trim to complete lines for better readability
+        if let Some(first_newline) = snippet.find('\n') {
+            if start > 0 {
+                snippet = snippet[first_newline + 1..].to_string();
+            }
+        }
+        if let Some(last_newline) = snippet.rfind('\n') {
+            if end < text.len() {
+                snippet = snippet[..last_newline].to_string();
+            }
+        }
+
+        snippet.trim().to_string()
+    } else {
+        text.chars().take(max_chars).collect()
+    }
+}
+
+/// Parse line numbers from chunk ID (format: "start_line-end_line" or "byte:start-end")
+fn parse_chunk_lines(chunk_id: &str) -> (usize, usize) {
+    // Try to parse line-based chunk ID first
+    if let Some((start, end)) = chunk_id.split_once('-') {
+        if let (Ok(s), Ok(e)) = (start.parse::<usize>(), end.parse::<usize>()) {
+            return (s, e);
+        }
+    }
+
+    // Default to 0 if we can't parse
+    (0, 0)
+}
+
 /// Build comprehensive symbol table with all metadata agents need
 fn build_symbol_table(
     graph: &ProjectGraph,
@@ -258,6 +376,9 @@ fn build_symbol_table(
     // Build cross-references: find which test files and docs mention each symbol
     let (test_refs, doc_refs) = build_cross_references(graph);
 
+    // Extract usage examples from test files and documentation
+    let usage_examples_map = extract_usage_examples(graph);
+
     // Build symbol table from graph symbols
     for symbol in &graph.symbols {
         let subsystem = symbol_to_subsystem
@@ -285,6 +406,7 @@ fn build_symbol_table(
         // Get cross-references for this symbol
         let used_in_tests = test_refs.get(&symbol.name).cloned();
         let mentioned_in_docs = doc_refs.get(&symbol.name).cloned();
+        let usage_examples = usage_examples_map.get(&symbol.name).cloned();
 
         symbols.insert(
             symbol.name.clone(),
@@ -299,6 +421,7 @@ fn build_symbol_table(
                 embedding_index: None, // Could be populated if we track symbol->chunk->embedding mapping
                 used_in_tests,
                 mentioned_in_docs,
+                usage_examples,
             },
         );
     }

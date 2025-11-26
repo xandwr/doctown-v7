@@ -363,6 +363,18 @@ impl McpServer {
                 }
             }),
             json!({
+                "name": "get_symbol_examples",
+                "description": "Get concrete usage examples of a symbol from tests and documentation",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Symbol name"},
+                        "limit": {"type": "number", "description": "Maximum number of examples to return (default: 5)"}
+                    },
+                    "required": ["symbol"]
+                }
+            }),
+            json!({
                 "name": "list_files",
                 "description": "List all files in the codebase",
                 "inputSchema": {
@@ -492,6 +504,7 @@ impl McpServer {
             "get_task_view" => self.tool_get_task_view(arguments)?,
             "read_file" => self.tool_read_file(arguments)?,
             "get_symbol_content" => self.tool_get_symbol_content(arguments)?,
+            "get_symbol_examples" => self.tool_get_symbol_examples(arguments)?,
             "list_files" => self.tool_list_files()?,
             // Write operations
             "apply_patch" => self.tool_apply_patch(arguments)?,
@@ -606,6 +619,45 @@ impl McpServer {
 
         let response =
             api::editor::get_symbol_content(&request, &self.agent_index.symbols, &mut archive)?;
+        Ok(serde_json::to_value(response)?)
+    }
+
+    fn tool_get_symbol_examples(&self, args: Option<Value>) -> Result<Value> {
+        #[derive(serde::Deserialize)]
+        struct Request {
+            symbol: String,
+            limit: Option<usize>,
+        }
+
+        let request: Request =
+            serde_json::from_value(args.ok_or_else(|| anyhow::anyhow!("Missing arguments"))?)?;
+
+        // Look up the symbol
+        let symbol_entry = self.agent_index.symbols.get(&request.symbol)
+            .ok_or_else(|| anyhow::anyhow!("Symbol '{}' not found", request.symbol))?;
+
+        // Get examples, applying limit if specified
+        let examples = match &symbol_entry.usage_examples {
+            Some(examples) => {
+                let limit = request.limit.unwrap_or(5).min(examples.len());
+                examples.iter().take(limit).cloned().collect::<Vec<_>>()
+            }
+            None => Vec::new(),
+        };
+
+        #[derive(serde::Serialize)]
+        struct Response {
+            symbol: String,
+            examples: Vec<doctown::docpack::UsageExample>,
+            total_count: usize,
+        }
+
+        let response = Response {
+            symbol: request.symbol,
+            total_count: examples.len(),
+            examples,
+        };
+
         Ok(serde_json::to_value(response)?)
     }
 

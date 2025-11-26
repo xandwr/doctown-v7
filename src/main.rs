@@ -84,6 +84,98 @@ impl ExecutionReport {
     }
 }
 
+/// Get list of changed files using git diff
+fn get_changed_files_from_git(base_commit: Option<&str>) -> Result<HashSet<String>> {
+    let mut changed_files = HashSet::new();
+
+    // Determine what to compare against
+    let comparison = match base_commit {
+        Some(commit) => commit.to_string(),
+        None => {
+            // Get the current commit
+            let output = std::process::Command::new("git")
+                .args(&["rev-parse", "HEAD"])
+                .output()?;
+
+            if !output.status.success() {
+                anyhow::bail!("Not in a git repository or git not available");
+            }
+
+            // Use HEAD as comparison point - we'll look for uncommitted changes
+            "HEAD".to_string()
+        }
+    };
+
+    // Get list of changed files (modified, added, but not committed)
+    let output = std::process::Command::new("git")
+        .args(&["diff", "--name-only", &comparison])
+        .output()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8(output.stdout)?;
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                changed_files.insert(trimmed.to_string());
+            }
+        }
+    }
+
+    // Also get untracked files
+    let output = std::process::Command::new("git")
+        .args(&["ls-files", "--others", "--exclude-standard"])
+        .output()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8(output.stdout)?;
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                changed_files.insert(trimmed.to_string());
+            }
+        }
+    }
+
+    // Also check staged files
+    let output = std::process::Command::new("git")
+        .args(&["diff", "--name-only", "--cached"])
+        .output()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8(output.stdout)?;
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                changed_files.insert(trimmed.to_string());
+            }
+        }
+    }
+
+    Ok(changed_files)
+}
+
+/// Detect files that changed based on comparing hashes
+fn detect_changed_files_from_hashes(
+    old_hashes: &HashMap<String, String>,
+    new_hashes: &HashMap<String, String>,
+) -> HashSet<String> {
+    let mut changed = HashSet::new();
+
+    // Check for modified files
+    for (path, new_hash) in new_hashes {
+        if let Some(old_hash) = old_hashes.get(path) {
+            if old_hash != new_hash {
+                changed.insert(path.clone());
+            }
+        } else {
+            // New file
+            changed.insert(path.clone());
+        }
+    }
+
+    changed
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let wall_start: DateTime<Utc> = Utc::now();
@@ -95,11 +187,25 @@ async fn main() -> Result<()> {
     report.args_parsed = Some(Utc::now());
 
     if args.len() < 2 {
-        eprintln!("Usage: doctown-builder <zip-path-or-url>");
+        eprintln!("Usage: doctown-builder <zip-path-or-url> [--update <existing-docpack>]");
+        eprintln!("       doctown-builder <zip-path-or-url>  # Full build");
+        eprintln!("       doctown-builder <zip-path-or-url> --update output.docpack  # Incremental update");
         std::process::exit(1);
     }
 
     let source = &args[1];
+
+    // Check for --update flag
+    let update_mode = args.iter().any(|arg| arg == "--update");
+    let existing_docpack = if update_mode {
+        // Find the docpack path (argument after --update)
+        args.iter()
+            .position(|arg| arg == "--update")
+            .and_then(|idx| args.get(idx + 1))
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
 
     // 1: Ingest
     report.before_zip_load = Some(Utc::now());
@@ -121,13 +227,54 @@ async fn main() -> Result<()> {
     println!("🚀 Using parallel pipeline...");
     report.before_processing = Some(Utc::now());
     let start = Instant::now();
-    let processed = unzip_to_memory_parallel(&zip_bytes, Some(&mut engine)).await?;
+    let mut processed = unzip_to_memory_parallel(&zip_bytes, Some(&mut engine)).await?;
     let elapsed = start.elapsed();
     report.processed = Some(Utc::now());
     println!("✅ Processed in {:.2}s", elapsed.as_secs_f64());
 
     // For comparison, the old sequential version:
     // let processed = unzip_to_memory(&zip_bytes, Some(&mut engine)).await?;
+
+    // If in update mode, filter to only changed files
+    if update_mode {
+        if let Some(ref docpack_path) = existing_docpack {
+            println!("\n🔄 Update mode: loading existing docpack...");
+
+            // Load existing manifest to get file hashes
+            let existing_file = std::fs::File::open(docpack_path)?;
+            let mut existing_archive = zip::ZipArchive::new(existing_file)?;
+
+            // Read manifest
+            let mut manifest_file = existing_archive.by_name("manifest.json")?;
+            let mut manifest_json = String::new();
+            std::io::Read::read_to_string(&mut manifest_file, &mut manifest_json)?;
+            let existing_manifest: docpack::Manifest = serde_json::from_str(&manifest_json)?;
+
+            if let Some(old_hashes) = existing_manifest.file_hashes {
+                // Compute hashes for new files
+                use sha2::{Sha256, Digest};
+                let mut new_hashes = HashMap::new();
+                for pf in &processed {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&pf.original_bytes);
+                    let hash = format!("{:x}", hasher.finalize());
+                    new_hashes.insert(pf.file_node.path.clone(), hash);
+                }
+
+                // Detect changed files
+                let changed_files = detect_changed_files_from_hashes(&old_hashes, &new_hashes);
+
+                println!("📊 Found {} changed files out of {} total", changed_files.len(), processed.len());
+
+                // Filter to only changed files
+                processed.retain(|pf| changed_files.contains(&pf.file_node.path));
+
+                println!("✅ Will reprocess {} changed files", processed.len());
+            } else {
+                println!("⚠️  No file hashes in existing docpack, doing full rebuild");
+            }
+        }
+    }
 
     println!("Processed {} files:", processed.len());
     for pf in &processed {
@@ -765,6 +912,12 @@ async fn main() -> Result<()> {
     println!("\n=== Generating .docpack file ===");
     let mut builder = docpack::DocpackBuilder::new(Some(source.to_string()));
     builder.process_files(processed)?;
+
+    // Compute file hashes for incremental updates
+    builder.compute_file_hashes();
+
+    // Detect git commit if available
+    builder.detect_git_commit();
 
     // Determine output filename - always use simple name in current directory
     let output_path = if source.contains("github.com") {
