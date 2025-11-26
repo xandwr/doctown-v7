@@ -1,3 +1,71 @@
+/// Compute detailed stats for code files: total, code, comment, and blank lines.
+pub fn code_file_stats(bytes: &[u8], ext: &str) -> Option<(usize, usize, usize, usize)> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut total = 0;
+    let mut code = 0;
+    let mut comment = 0;
+    let mut blank = 0;
+    
+    let is_rust = ext == "rs";
+    let is_python = ext == "py";
+    let is_js_ts = ext == "js" || ext == "ts" || ext == "jsx" || ext == "tsx";
+    let is_c_family = ext == "cpp" || ext == "cc" || ext == "c" || ext == "h" || ext == "hpp" || ext == "cxx" || ext == "java";
+    let has_c_style_comments = is_rust || is_js_ts || is_c_family;
+    
+    let mut in_multiline_comment = false;
+    
+    for line in text.lines() {
+        total += 1;
+        let trimmed = line.trim();
+        
+        if trimmed.is_empty() {
+            blank += 1;
+            continue;
+        }
+        
+        // Track multi-line comments for C-style languages
+        if has_c_style_comments {
+            // Check if we're entering a multi-line comment
+            if trimmed.contains("/*") {
+                in_multiline_comment = true;
+            }
+            
+            // If in multi-line comment, count as comment
+            if in_multiline_comment {
+                comment += 1;
+                // Check if we're exiting the multi-line comment
+                if trimmed.contains("*/") {
+                    in_multiline_comment = false;
+                }
+                continue;
+            }
+            
+            // Single-line comment
+            if trimmed.starts_with("//") {
+                comment += 1;
+                continue;
+            }
+        }
+        
+        // Python comments
+        if is_python {
+            if trimmed.starts_with("#") {
+                comment += 1;
+                continue;
+            }
+            // Python docstrings (simplified detection)
+            if trimmed.starts_with("\"\"\"") || trimmed.starts_with("'''") {
+                comment += 1;
+                continue;
+            }
+        }
+        
+        // If we get here, it's a code line
+        code += 1;
+    }
+    
+    Some((total, code, comment, blank))
+}
 use anyhow::{Result, anyhow};
 use reqwest::Client;
 use std::collections::HashMap;
@@ -348,6 +416,7 @@ pub struct ProcessedFile {
     pub embeddings: Vec<Embedding>,
     pub metadata: HashMap<String, String>,
     pub graph_edges: Vec<GraphEdge>,
+    pub original_bytes: Vec<u8>,
 }
 
 impl ProcessedFile {
@@ -358,6 +427,7 @@ impl ProcessedFile {
             embeddings: Vec::new(),
             metadata: HashMap::new(),
             graph_edges: Vec::new(),
+            original_bytes: Vec::new(),
         }
     }
 }
@@ -397,6 +467,7 @@ pub async fn process_file(node: &FileNode, plan: &ProcessingPlan) -> ProcessedFi
         embeddings,
         metadata: compute_metadata(node, plan.get_metadata()),
         graph_edges: assembled_edges,
+        original_bytes: node.bytes.clone(),
     }
 }
 
@@ -434,9 +505,9 @@ fn run_extractions(node: &FileNode, kinds: &Vec<ExtractionKind>) -> Vec<(Extract
         .collect()
 }
 
-/// Run chunking on the extracted pieces. Very small, heuristic implementation.
+/// Run chunking on the extracted pieces. AST-driven for code, heuristic for other types.
 fn run_chunking(
-    _node: &FileNode,
+    node: &FileNode,
     extracted: &Vec<(ExtractionKind, String)>,
     strategy: &ChunkingStrategy,
 ) -> Vec<Chunk> {
@@ -502,19 +573,8 @@ fn run_chunking(
             out
         }
         ChunkingStrategy::CodeAware => {
-            // naive: split by blank line segments
-            let full = extracted
-                .iter()
-                .map(|(_, t)| t.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
-            full.split("\n\n")
-                .enumerate()
-                .map(|(i, s)| Chunk {
-                    id: ChunkId(format!("c-{}", i)),
-                    text: s.trim().to_string(),
-                })
-                .collect()
+            // AST-driven chunking for supported languages
+            ast_chunking(node)
         }
         ChunkingStrategy::Delimiter(d) => {
             let full = extracted
@@ -531,6 +591,102 @@ fn run_chunking(
                 .collect()
         }
     }
+}
+
+/// AST-driven chunking: extract top-level items as logical chunks
+fn ast_chunking(node: &FileNode) -> Vec<Chunk> {
+    let ext = std::path::Path::new(&node.path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    let text = String::from_utf8_lossy(&node.bytes).to_string();
+
+    // Only do AST chunking for supported languages
+    if ext != "rs" {
+        // Fallback to simple blank-line chunking
+        return text
+            .split("\n\n")
+            .enumerate()
+            .filter(|(_, s)| !s.trim().is_empty())
+            .map(|(i, s)| Chunk {
+                id: ChunkId(format!("c-{}", i)),
+                text: s.trim().to_string(),
+            })
+            .collect();
+    }
+
+    use tree_sitter::Parser;
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .is_err()
+    {
+        // Fallback if tree-sitter fails
+        return vec![Chunk {
+            id: ChunkId("full".to_string()),
+            text,
+        }];
+    }
+
+    let tree = match parser.parse(&text, None) {
+        Some(t) => t,
+        None => {
+            return vec![Chunk {
+                id: ChunkId("full".to_string()),
+                text,
+            }]
+        }
+    };
+
+    let source = text.as_bytes();
+    let root = tree.root_node();
+    let mut chunks = Vec::new();
+
+    // Helper to get node text
+    fn node_text(n: &tree_sitter::Node, src: &[u8]) -> String {
+        n.utf8_text(src).unwrap_or("").to_string()
+    }
+
+    // Walk top-level items and create chunks
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        let kind = child.kind();
+        
+        // Top-level items we want to chunk
+        match kind {
+            "function_item" | "struct_item" | "enum_item" | "trait_item" 
+            | "impl_item" | "mod_item" | "const_item" | "static_item" 
+            | "type_item" | "macro_definition" | "use_declaration" => {
+                let start = child.start_byte();
+                let end = child.end_byte();
+                let chunk_text = node_text(&child, source);
+                
+                // Create a meaningful chunk ID
+                let item_name = child
+                    .child_by_field_name("name")
+                    .map(|n| node_text(&n, source))
+                    .unwrap_or_else(|| kind.to_string());
+                
+                chunks.push(Chunk {
+                    id: ChunkId(format!("{}:{}-{}", item_name, start, end)),
+                    text: chunk_text,
+                });
+            }
+            // Skip comments, attributes at module level - they'll be included with their items
+            _ => {}
+        }
+    }
+
+    // If no chunks were created (e.g., file with only comments), return full content
+    if chunks.is_empty() {
+        chunks.push(Chunk {
+            id: ChunkId("full".to_string()),
+            text,
+        });
+    }
+
+    chunks
 }
 
 /// Parse symbols from the node using tree-sitter for comprehensive Rust analysis.
@@ -1198,6 +1354,14 @@ fn assemble_nodes(
 /// Compute simple metadata keys on the node according to requested keys.
 fn compute_metadata(node: &FileNode, keys: &Vec<String>) -> HashMap<String, String> {
     let mut m = HashMap::new();
+    // Always add path and filetype for reporting
+    m.insert("path".to_string(), node.path.clone());
+    let ext = std::path::Path::new(&node.path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    m.insert("filetype".to_string(), ext);
     let text = String::from_utf8_lossy(&node.bytes).to_string();
     for k in keys.iter() {
         match k.as_str() {
