@@ -2330,13 +2330,13 @@ pub async fn unzip_to_memory_parallel(
         }
 
         processed.push(ProcessedFile {
-            file_node: node,
+            file_node: node.clone(),
             chunks,
             symbols,
             embeddings: file_embeddings,
             metadata,
             graph_edges,
-            original_bytes: Vec::new(), // Save memory - we already have the node
+            original_bytes: node.bytes.clone(), // Keep for docpack writing
         });
     }
 

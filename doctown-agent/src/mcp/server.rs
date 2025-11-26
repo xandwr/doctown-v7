@@ -714,7 +714,7 @@ impl McpServer {
         let mut archive = ZipArchive::new(file)?;
 
         let response =
-            api::editor::get_symbol_content(&request, &self.agent_index.symbols, &mut archive)?;
+            api::editor::get_symbol_content(&request, &self.agent_index.symbols, &self.chunks, &mut archive)?;
         Ok(serde_json::to_value(response)?)
     }
 

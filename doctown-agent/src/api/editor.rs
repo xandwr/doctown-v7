@@ -49,16 +49,21 @@ pub fn read_file(
     request: &FileRequest,
     archive: &mut ZipArchive<std::fs::File>,
 ) -> Result<FileResponse> {
+    // Validate path is not empty
+    if request.path.is_empty() {
+        anyhow::bail!("File path cannot be empty");
+    }
+
     // Try to find the file in source/ directory
     let file_path = format!("source/{}", request.path.trim_start_matches('/'));
 
     let mut file = archive
         .by_name(&file_path)
-        .context(format!("File not found: {}", request.path))?;
+        .context(format!("File not found in docpack: '{}' (looking for '{}')", request.path, file_path))?;
 
     let mut content = String::new();
     file.read_to_string(&mut content)
-        .context("Failed to read file content")?;
+        .context(format!("Failed to read file content from '{}'", request.path))?;
 
     let size = content.len();
 
@@ -93,12 +98,25 @@ pub fn get_chunk(
 pub fn get_symbol_content(
     request: &SymbolContentRequest,
     symbols: &std::collections::HashMap<String, doctown::docpack::SymbolEntry>,
+    chunks: &[doctown::docpack::ChunkEntry],
     archive: &mut ZipArchive<std::fs::File>,
 ) -> Result<Option<SymbolContentResponse>> {
     if let Some(entry) = symbols.get(&request.symbol) {
+        // Determine the file path - use chunks if file field is empty
+        let file_path = if entry.file.is_empty() {
+            // Try to find the file from chunk data
+            if let Some(chunk) = chunks.iter().find(|c| c.chunk_id == entry.chunk) {
+                chunk.file_path.clone()
+            } else {
+                return Ok(None);
+            }
+        } else {
+            entry.file.clone()
+        };
+
         // Read the file containing the symbol
         let file_request = FileRequest {
-            path: entry.file.clone(),
+            path: file_path.clone(),
         };
 
         match read_file(&file_request, archive) {
@@ -112,12 +130,15 @@ pub fn get_symbol_content(
 
                 Ok(Some(SymbolContentResponse {
                     symbol: request.symbol.clone(),
-                    file: entry.file.clone(),
+                    file: file_path,
                     content,
                     chunk_range: entry.chunk.clone(),
                 }))
             }
-            Err(_) => Ok(None),
+            Err(e) => {
+                eprintln!("Warning: Failed to read file '{}' for symbol '{}': {}", file_path, request.symbol, e);
+                Ok(None)
+            }
         }
     } else {
         Ok(None)
@@ -132,9 +153,17 @@ fn extract_chunk_from_content(content: &str, chunk_range: &str) -> String {
     }
 
     if let (Ok(start), Ok(end)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
-        // Assume byte offsets for now
-        if start < content.len() && end <= content.len() {
-            return content[start..end].to_string();
+        // Handle byte offsets with proper UTF-8 boundary checking
+        let bytes = content.as_bytes();
+        if start < bytes.len() && end <= bytes.len() {
+            // Find valid UTF-8 boundaries
+            let start_pos = std::cmp::min(start, bytes.len());
+            let end_pos = std::cmp::min(end, bytes.len());
+            
+            // Try to extract at exact positions, fallback to full content if invalid UTF-8
+            if let Ok(extracted) = std::str::from_utf8(&bytes[start_pos..end_pos]) {
+                return extracted.to_string();
+            }
         }
     }
 
